@@ -1,0 +1,671 @@
+/* Lens Flares Skin -- anamorphic blue/warm bokeh visualizer */
+
+/* Google Sans - latin-ext */
+@font-face {
+  font-family: 'Google Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/voice_satellite/fonts/google-sans-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* Google Sans - latin */
+@font-face {
+  font-family: 'Google Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/voice_satellite/fonts/google-sans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ─── Theme tokens ────────────────────────────────────────────────── */
+/* Lens Flares is a dark-only skin: the pure-black backdrop is integral
+   to the look, so we don't expose a light variant. The .vs-light class
+   still renders correctly, just with the same dark tokens. */
+
+#voice-satellite-ui {
+  --lf-text: #e6ecff;
+  --lf-text-dim: rgba(230, 236, 255, 0.80);
+  --lf-text-muted: #b8c4dc;
+  --lf-surface: #0a0e1a;
+  --lf-surface-glass: rgba(10, 14, 26, 0.45);
+  --lf-overlay: rgb(0, 0, 0);
+  --lf-shadow: rgba(0, 0, 0, 0.55);
+  --lf-shadow-lg: rgba(0, 0, 0, 0.65);
+  --lf-accent: #50a0ff;
+  --lf-accent-warm: #ff6480;
+  --lf-divider: rgba(180, 200, 255, 0.10);
+  --lf-scrollbar: rgba(180, 200, 255, 0.22);
+  --lf-scrollbar-hover: rgba(180, 200, 255, 0.40);
+  --lf-progress: rgba(80, 160, 255, 0.20);
+  --lf-badge-bg: rgba(180, 200, 255, 0.10);
+
+  font-family: "Google Sans", Roboto, Noto, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ─── Blur Overlay ──────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-blur-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--lf-overlay);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  z-index: 9999;
+  pointer-events: none;
+  will-change: opacity;
+}
+
+#voice-satellite-ui .vs-blur-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ─── Start Button ──────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-start-btn {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--lf-accent, #50a0ff);
+  border: none;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px var(--lf-shadow), 0 4px 16px var(--lf-shadow-lg);
+  z-index: 10001;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+#voice-satellite-ui .vs-start-btn.visible {
+  display: flex;
+  animation: lf-btn-pulse 2.5s ease-in-out infinite;
+}
+
+#voice-satellite-ui .vs-start-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px var(--lf-shadow-lg), 0 6px 20px var(--lf-shadow-lg);
+  animation: none;
+}
+
+#voice-satellite-ui .vs-start-btn svg {
+  width: 28px;
+  height: 28px;
+  fill: white;
+}
+
+@keyframes lf-btn-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+
+/* ─── Rainbow Bar -- HIDDEN (replaced by canvas flares) ─────────── */
+
+#voice-satellite-ui .vs-rainbow-bar {
+  display: none !important;
+}
+
+/* ─── Lens Flares Canvas ────────────────────────────────────────── */
+
+.vs-lens-flares {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+#voice-satellite-ui .vs-blur-overlay.visible ~ .vs-lens-flares {
+  opacity: 1 !important;
+}
+
+.vs-lens-flares canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  will-change: contents;
+  transform: translateZ(0);
+}
+
+/* ─── Chat Container ────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-chat-container {
+  position: fixed;
+  left: 7.5%;
+  right: 7.5%;
+  bottom: 72px;
+  display: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  width: auto;
+  contain: content;
+  z-index: 10001;
+  pointer-events: none;
+  overflow: visible;
+  transition: left 0.4s ease, right 0.4s ease, bottom 0.3s ease;
+}
+
+#voice-satellite-ui .vs-chat-container.visible {
+  display: flex;
+  pointer-events: auto;
+}
+
+#voice-satellite-ui .vs-chat-container.announcement-mode {
+  left: 50% !important;
+  right: auto !important;
+  width: 85%;
+  top: 72% !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%);
+}
+
+#voice-satellite-ui .vs-chat-msg {
+  max-width: 85%;
+  opacity: 0;
+  animation: lf-fade-in 0.3s ease forwards;
+  word-wrap: break-word;
+  white-space: pre-line;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 4px 0;
+  border-radius: 0;
+}
+
+/* Multi-layer text-shadow draws a dense dark halo around each
+   character so messages stay readable against the bright bloom.
+   Three shadows stacked: tight definition + medium glow + soft drop. */
+#voice-satellite-ui .vs-chat-msg.user {
+  font-size: calc(32px * var(--vs-text-scale, 1));
+  color: var(--lf-text-dim);
+  font-weight: normal;
+  align-self: flex-start;
+  text-align: left;
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 14px rgba(0, 0, 0, 0.75),
+    0 2px 4px rgba(0, 0, 0, 0.8);
+}
+
+#voice-satellite-ui .vs-chat-msg.assistant {
+  font-size: calc(36px * var(--vs-text-scale, 1));
+  color: var(--lf-text);
+  font-weight: 400;
+  align-self: flex-start;
+  text-align: left;
+  max-height: 70vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lf-scrollbar) transparent;
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 14px rgba(0, 0, 0, 0.85),
+    0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+#voice-satellite-ui .vs-chat-msg.announcement {
+  font-size: calc(36px * var(--vs-text-scale, 1));
+  color: var(--lf-text);
+  font-weight: 400;
+  align-self: flex-start;
+  text-align: left;
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 14px rgba(0, 0, 0, 0.85),
+    0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+@keyframes lf-fade-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Thinking Indicator ────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-chat-msg.thinking {
+  font-size: calc(36px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted);
+  font-weight: 400;
+  padding: 4px 0;
+}
+
+#voice-satellite-ui .vs-thinking-dots {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+#voice-satellite-ui .vs-thinking-dots span {
+  display: inline-block;
+  font-size: calc(36px * var(--vs-text-scale, 1));
+  line-height: 1;
+  animation: lf-dot-bounce 1.4s ease-in-out infinite;
+}
+
+#voice-satellite-ui .vs-thinking-dots span:nth-child(1) {
+  color: var(--lf-accent, #50a0ff);
+  animation-delay: 0s;
+}
+
+#voice-satellite-ui .vs-thinking-dots span:nth-child(2) {
+  color: #b4d4ff;
+  animation-delay: 0.2s;
+}
+
+#voice-satellite-ui .vs-thinking-dots span:nth-child(3) {
+  color: var(--lf-accent-warm, #ff6480);
+  animation-delay: 0.4s;
+}
+
+@keyframes lf-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-8px); }
+}
+
+#voice-satellite-ui .vs-chat-msg.thinking.idle .vs-thinking-dots span,
+#voice-satellite-ui .vs-chat-msg.tool-call .vs-thinking-dots span {
+  animation: none;
+  transform: none;
+  font-size: calc(22px * var(--vs-text-scale, 1));
+}
+
+#voice-satellite-ui .vs-thinking-text {
+  margin-left: 8px;
+  padding-right: 2px;
+  font-size: calc(22px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted);
+  font-style: italic;
+}
+
+#voice-satellite-ui .vs-chat-msg.tool-call {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 2px 0;
+}
+
+#voice-satellite-ui .vs-chat-msg.thinking.idle {
+  display: flex;
+  align-items: center;
+}
+
+/* ─── Timer Container ───────────────────────────────────────────── */
+
+.vs-timer-container {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 10001;
+  pointer-events: none;
+  font-family: "Google Sans", Roboto, Noto, sans-serif;
+}
+
+.vs-timer-pill {
+  position: relative;
+  overflow: hidden;
+  contain: content;
+  font-size: calc(28px * var(--vs-text-scale, 1));
+  color: var(--lf-text);
+  font-weight: bold;
+  background: var(--lf-surface);
+  border: none;
+  padding: 14px 18px;
+  border-radius: 18px;
+  box-shadow: 0 1px 3px var(--lf-shadow), 0 4px 8px var(--lf-shadow-lg);
+  animation: lf-timer-fade-in 0.3s ease forwards;
+  pointer-events: auto;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vs-timer-progress {
+  position: absolute;
+  top: 0; left: 0;
+  height: 100%;
+  background: var(--lf-progress);
+  opacity: 1;
+  transition: width 1s linear;
+  pointer-events: none;
+}
+
+.vs-timer-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vs-timer-icon { flex-shrink: 0; }
+.vs-timer-time { font-variant-numeric: tabular-nums; flex-shrink: 0; }
+
+.vs-timer-pill.vs-timer-expired {
+  animation: lf-timer-fade-out 0.4s ease forwards;
+}
+
+.vs-timer-alert {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: calc(28px * var(--vs-text-scale, 1));
+  font-family: "Google Sans", Roboto, Noto, sans-serif;
+  color: var(--lf-text);
+  font-weight: bold;
+  background: var(--lf-surface);
+  border: none;
+  padding: 18px 24px;
+  border-radius: 18px;
+  box-shadow: 0 2px 6px var(--lf-shadow), 0 8px 24px var(--lf-shadow-lg);
+  z-index: 10002;
+  animation: lf-alert-pulse 1.5s ease-in-out infinite;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vs-timer-alert .vs-timer-icon { font-size: 1.5em; }
+.vs-timer-alert .vs-timer-time { font-size: 1.2em; }
+
+@keyframes lf-timer-fade-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes lf-timer-fade-out {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(8px); }
+}
+@keyframes lf-alert-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.04); }
+}
+
+/* ─── Image Panel ───────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-image-panel {
+  position: fixed;
+  top: 50%;
+  right: 7.5%;
+  transform: translateY(-50%);
+  width: 30%;
+  max-height: 70vh;
+  overflow: hidden;
+  z-index: 10001;
+  pointer-events: none;
+  display: none;
+  background: var(--lf-surface-glass, var(--lf-surface));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: none;
+  /* text-shadow is inherited, so this halos every text descendant
+     (weather, financial, video titles) so they read against bright
+     bloom even when the glass background lets some through. */
+  text-shadow:
+    0 0 3px rgba(0, 0, 0, 0.90),
+    0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+#voice-satellite-ui .vs-panel-scroll {
+  overflow-y: auto;
+  max-height: calc(70vh - 24px);
+  padding-right: 8px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lf-scrollbar) transparent;
+}
+
+#voice-satellite-ui .vs-panel-scroll::-webkit-scrollbar { width: 6px; }
+#voice-satellite-ui .vs-panel-scroll::-webkit-scrollbar-track { background: transparent; }
+#voice-satellite-ui .vs-panel-scroll::-webkit-scrollbar-thumb {
+  background: var(--lf-scrollbar);
+  border-radius: 3px;
+}
+#voice-satellite-ui .vs-panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--lf-scrollbar-hover);
+}
+
+#voice-satellite-ui .vs-image-panel.visible {
+  display: block;
+  pointer-events: auto;
+}
+
+#voice-satellite-ui .vs-image-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+}
+
+#voice-satellite-ui .vs-image-grid.single { grid-template-columns: 1fr; }
+#voice-satellite-ui .vs-image-grid.single .vs-panel-img {
+  aspect-ratio: auto;
+  max-height: calc(70vh - 24px);
+  object-fit: contain;
+}
+
+#voice-satellite-ui .vs-panel-img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 12px;
+  opacity: 0;
+  animation: lf-fade-in 0.3s ease forwards;
+}
+
+/* ─── Lightbox ──────────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.92);
+}
+
+#voice-satellite-ui .vs-lightbox.visible { display: flex; }
+
+#voice-satellite-ui .vs-lightbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+#voice-satellite-ui .vs-lightbox-iframe {
+  width: 90vw;
+  max-width: 1200px;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  display: none;
+}
+
+/* ─── Video Grid ────────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-video-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  width: 100%;
+}
+
+#voice-satellite-ui .vs-video-card { cursor: pointer; }
+#voice-satellite-ui .vs-video-thumb-wrap { position: relative; width: 100%; }
+
+#voice-satellite-ui .vs-video-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 12px;
+}
+
+#voice-satellite-ui .vs-video-duration {
+  position: absolute;
+  bottom: 8px; right: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+#voice-satellite-ui .vs-video-info { padding: 8px 4px 0; }
+
+#voice-satellite-ui .vs-video-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--lf-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+#voice-satellite-ui .vs-video-channel {
+  font-size: 12px;
+  color: var(--lf-text-muted);
+  margin-top: 2px;
+}
+
+#voice-satellite-ui.has-images .vs-chat-container { right: calc(37.5% + 40px); }
+#voice-satellite-ui.has-featured .vs-chat-container { right: calc(32.5% + 40px); }
+#voice-satellite-ui.has-images .vs-chat-msg,
+#voice-satellite-ui.has-featured .vs-chat-msg { max-width: 100%; }
+#voice-satellite-ui .vs-image-panel.featured { width: 25%; }
+
+/* ─── Weather ───────────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-image-panel.weather { border: none; }
+
+#voice-satellite-ui .vs-weather-card { padding: 8px 0; }
+
+#voice-satellite-ui .vs-weather-header {
+  display: flex; align-items: center; gap: 20px; padding: 12px 4px;
+}
+
+#voice-satellite-ui .vs-weather-icon { width: 96px; height: 96px; flex-shrink: 0; }
+
+#voice-satellite-ui .vs-weather-temp {
+  font-size: calc(52px * var(--vs-text-scale, 1));
+  font-weight: 500; color: var(--lf-text); line-height: 1.1;
+}
+
+#voice-satellite-ui .vs-weather-condition {
+  font-size: calc(22px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted); margin-top: 4px;
+}
+
+#voice-satellite-ui .vs-weather-humidity {
+  font-size: calc(18px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted); margin-top: 4px;
+}
+
+#voice-satellite-ui .vs-weather-divider {
+  height: 1px; background: var(--lf-divider); margin: 12px 0;
+}
+
+#voice-satellite-ui .vs-weather-forecast { display: flex; flex-direction: column; }
+
+#voice-satellite-ui .vs-weather-row {
+  display: flex; align-items: center; padding: 6px 4px;
+}
+
+#voice-satellite-ui .vs-weather-row-time {
+  width: 30%; font-size: calc(18px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted); flex-shrink: 0;
+}
+
+#voice-satellite-ui .vs-weather-row-cond {
+  flex: 1; font-size: calc(18px * var(--vs-text-scale, 1));
+  color: var(--lf-text-muted);
+}
+
+#voice-satellite-ui .vs-weather-row-temp {
+  font-size: calc(22px * var(--vs-text-scale, 1));
+  font-weight: 500; color: var(--lf-text); text-align: right; min-width: 56px;
+}
+
+/* ─── Financial ─────────────────────────────────────────────────── */
+
+#voice-satellite-ui .vs-image-panel.financial { border: none; }
+
+#voice-satellite-ui .vs-financial-card { padding: 8px 0; }
+
+#voice-satellite-ui .vs-financial-header {
+  display: flex; align-items: center; gap: 12px; padding: 8px 4px;
+}
+
+#voice-satellite-ui .vs-financial-logo {
+  width: 32px; height: 32px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+}
+
+#voice-satellite-ui .vs-financial-name {
+  font-size: calc(20px * var(--vs-text-scale, 1)); color: var(--lf-text); flex: 1; min-width: 0;
+}
+
+#voice-satellite-ui .vs-financial-badge {
+  font-size: calc(12px * var(--vs-text-scale, 1)); color: var(--lf-text-muted);
+  background: var(--lf-badge-bg); padding: 2px 8px; border-radius: 4px; flex-shrink: 0;
+}
+
+#voice-satellite-ui .vs-financial-price {
+  font-size: calc(48px * var(--vs-text-scale, 1)); font-weight: 500;
+  color: var(--lf-text); padding: 4px 4px 0; line-height: 1.1;
+}
+
+#voice-satellite-ui .vs-financial-change {
+  font-size: calc(22px * var(--vs-text-scale, 1)); padding: 4px 4px 8px;
+}
+
+#voice-satellite-ui .vs-financial-change.up { color: #4ddc94; }
+#voice-satellite-ui .vs-financial-change.down { color: #ff6480; }
+
+#voice-satellite-ui .vs-financial-details {
+  font-size: calc(16px * var(--vs-text-scale, 1)); color: var(--lf-text-muted); padding: 8px 4px;
+}
+
+#voice-satellite-ui .vs-financial-conversion {
+  font-size: calc(42px * var(--vs-text-scale, 1)); font-weight: 500;
+  color: var(--lf-text); padding: 16px 4px 8px; line-height: 1.2;
+}
+
+#voice-satellite-ui .vs-financial-rate {
+  font-size: calc(20px * var(--vs-text-scale, 1)); color: var(--lf-text-muted); padding: 4px 4px;
+}
+
+.vs-timer-name-label {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, calc(-50% + 80px));
+  z-index: 10002;
+  text-align: center;
+  max-width: 80vw;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  color: var(--lf-text);
+  font-size: calc(36px * var(--vs-text-scale, 1));
+  font-weight: 400;
+  text-shadow:
+    0 0 4px rgba(0, 0, 0, 0.95),
+    0 0 14px rgba(0, 0, 0, 0.85),
+    0 2px 4px rgba(0, 0, 0, 0.9);
+}

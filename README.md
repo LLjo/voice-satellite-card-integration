@@ -31,7 +31,7 @@ Voice Satellite runs as a **global engine** that loads on every page of Home Ass
 - **Dual wake words / dual pipelines** - load two wake words simultaneously (e.g. "Okay Nabu" and "Hey Jarvis") and route each to its own Assist pipeline, so a household can mix languages, mix a local-only pipeline with a cloud/LLM one, or give each character its own conversation agent and voice
 - **Timers, announcements, conversations** - voice-activated timers with countdown pills, `assist_satellite.announce` / `start_conversation` / `ask_question` from automations
 - **Media player entity** - volume control, `tts.speak` targeting, and `media_player.play_media` from automations. TTS can route to browser or a remote speaker
-- **Skins** - 7 built-in skins (Default, Alexa, Google Home, Home Assistant, Retro Terminal, Siri, Waveform) with CSS overrides. Reactive audio-level animation on the activity bar
+- **Skins** - 8 built-in skins (Default, Alexa, Google Home, Home Assistant, Lens Flares, Retro Terminal, Siri, Waveform) with CSS overrides. Reactive audio-level animation on the activity bar
 - **Screensaver** - black overlay, image/video/folder from the HA media library, or live camera feed. Cross-fades between folder items; integrates with Fully Kiosk backlight dimming and motion-dismiss
 - **Mini card** - optional `voice-satellite-mini-card` for in-dashboard text display without the fullscreen overlay
 - **LLM tools** *(experimental)* - image/video/web/Wikipedia search, weather, stocks/crypto with visual panels. Requires [Voice Satellite - LLM Tools](https://github.com/jxlarrea/voice-satellite-card-llm-tools)
@@ -125,7 +125,7 @@ See the [Wake Word reference](docs/wake-word.md) for built-in models, custom mod
 
 ## Skins & Customization
 
-Seven built-in skins (Default, Alexa, Google Home, Home Assistant, Retro Terminal, Siri, Waveform) theme the overlay, timer pills, and activity bar. Every skin can be further tweaked via the **Custom CSS** field in the sidebar panel, and the Waveform skin exposes dedicated CSS variables for per-strand color control. Built-in chime sounds (`wake`, `done`, `error`, `alert`, `announce`) can be replaced with your own MP3s that survive HACS updates.
+Eight built-in skins (Default, Alexa, Google Home, Home Assistant, Lens Flares, Retro Terminal, Siri, Waveform) theme the overlay, timer pills, and activity bar. Every skin can be further tweaked via the **Custom CSS** field in the sidebar panel, and the Waveform skin exposes dedicated CSS variables for per-strand color control. Built-in chime sounds (`wake`, `done`, `error`, `alert`, `announce`) can be replaced with your own MP3s that survive HACS updates.
 
 <img src="https://raw.githubusercontent.com/jxlarrea/voice-satellite-card-integration/refs/heads/main/assets/screenshots/skins.jpg" alt="Skins" width="100%"/>
 

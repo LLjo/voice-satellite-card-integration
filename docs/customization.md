@@ -8,6 +8,7 @@ Theming the overlay (skins, custom CSS) and replacing the built-in chime sounds.
   - [Built-in Skins](#built-in-skins)
   - [Custom CSS](#custom-css)
   - [Waveform Skin CSS Variables](#waveform-skin-css-variables)
+  - [Lens Flares Skin CSS Variables](#lens-flares-skin-css-variables)
 - [Custom Sounds](#custom-sounds)
 
 ## Skins
@@ -24,6 +25,7 @@ Voice Satellite includes a skin system that themes the entire overlay UI - activ
 | **Alexa** | Cyan glow bar, dark overlay, centered bold text, Echo-inspired design |
 | **Google Home** | Four-color Google gradient bar, left-aligned text, Nest-inspired design. Supports light and dark mode which automatically follows your HA theme or can be forced via the Theme Mode setting |
 | **Home Assistant** | Matches your HA theme natively in both light and dark mode. All colors derived from your theme's primary color and card background via CSS custom properties - automatically adapts to any HA theme. Monochromatic four-tone activity bar with flowing gradient animation |
+| **Lens Flares** | Anamorphic vertical light streaks in cool blues with warm pink/red accents and scattered bokeh dots, all behind a heavy multi-pass bloom. Audio level pulses the brightness of the flares; a slow horizontal drift keeps the scene alive at idle. Edge falloff dims flares on the left and right where text sits, keeping the middle bright. Dark-only by design |
 | **Retro Terminal** | Green phosphor CRT aesthetic with scanlines, bezel frame, monospace font, and screen-edge glow |
 | **Siri** | Full-screen gradient border glow (purple -> blue -> teal -> pink), dark frosted overlay, centered clean text, Apple-inspired design |
 | **Waveform** | Animated flowing neon waveform with strands that react to audio in real time. Automatically adapts to light and dark modes based on your Home Assistant theme settings. **GPU-intensive! Not recommended for low-end devices** |
@@ -104,6 +106,31 @@ The Waveform skin exposes CSS variables for full color customization of strands,
   --wf-strand-7: #1a1a1a;
 }
 ```
+
+</details>
+
+### Lens Flares Skin CSS Variables
+
+Lens Flares uses a single token set (no separate light variant). Flare colors are baked into the canvas rendering, but every chrome element (text, timer pill, image panel glass, scrollbars, badges, video labels) is themed by the variables below. Override them in the **Custom CSS** field.
+
+<details>
+<summary><strong>Available variables</strong></summary>
+
+| Variable | Description |
+|----------|-------------|
+| `--lf-overlay` | Full-screen background behind the canvas |
+| `--lf-surface` | Background of elevated UI elements (timer pills, alerts) |
+| `--lf-surface-glass` | Transparent glass background for the rich-media panel |
+| `--lf-text` | Primary text color (assistant messages, timers) |
+| `--lf-text-dim` | User-message text color |
+| `--lf-text-muted` | Muted labels (tool names, weather conditions, video channels, financial details) |
+| `--lf-accent` | Cool accent (start button, thinking dot 1, progress bars) |
+| `--lf-accent-warm` | Warm accent (thinking dot 3) |
+| `--lf-progress` | Timer pill progress bar fill |
+| `--lf-divider` | Hairline dividers (weather card sections) |
+| `--lf-scrollbar` / `--lf-scrollbar-hover` | Image-panel scrollbar tones |
+| `--lf-badge-bg` | Background for small inline badges (financial source, etc.) |
+| `--lf-shadow` / `--lf-shadow-lg` | Drop-shadow tones for elevated chrome |
 
 </details>
 

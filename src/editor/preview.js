@@ -10,6 +10,7 @@ import { getSkin, loadSkin } from '../skins/index.js';
 import baseCSS from './preview.css';
 import { t } from '../i18n/index.js';
 import waveformPreviewCSS from '../skins/waveform-preview.css';
+import lensFlaresPreviewCSS from '../skins/lens-flares-preview.css';
 
 const PREVIEW_ONLY_SKINS = {
   waveform: {
@@ -17,6 +18,14 @@ const PREVIEW_ONLY_SKINS = {
     previewCSS: waveformPreviewCSS,
     overlayColor: null,
     defaultOpacity: 0.90,
+  },
+  'lens-flares': {
+    id: 'lens-flares',
+    previewCSS: lensFlaresPreviewCSS,
+    overlayColor: [0, 0, 0],
+    darkOverlayColor: [0, 0, 0],
+    defaultOpacity: 1,
+    darkDefaultOpacity: 1,
   },
 };
 
@@ -139,6 +148,107 @@ function buildWaveformSVG() {
 }
 
 /**
+ * Build an inline SVG of vertical anamorphic light streaks plus
+ * scattered bokeh dots, blurred via SVG `feGaussianBlur` to mimic the
+ * live canvas's multi-pass bloom. Positions are seeded so the preview
+ * is stable across re-renders.
+ */
+function buildLensFlaresSVG() {
+  const W = 600, H = 400;
+  let seed = 11;
+  function rand() { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
+
+  const blueHues = ['30,80,220', '80,160,255', '180,220,255'];
+  const warmHues = ['200,60,110', '255,100,140', '255,170,190'];
+
+  const streaks = [];
+  // Blue streaks
+  const N_BLUE = 14;
+  for (let i = 0; i < N_BLUE; i++) {
+    const t = (i + 0.5) / N_BLUE + (rand() - 0.5) * (0.3 / N_BLUE);
+    const w = 14 + rand() * 80;
+    const h = H * (0.55 + rand() * 0.40);
+    const yOff = (rand() - 0.5) * H * 0.18;
+    const cx = t * W;
+    const cy = H * 0.5 + yOff;
+    const x = cx - w / 2;
+    const y = cy - h / 2;
+    const color = blueHues[Math.floor(rand() * blueHues.length)];
+    const a = 0.45 + rand() * 0.45;
+    streaks.push({ x, y, w, h, cx, cy, color, a, isCore: rand() < 0.45 });
+  }
+  // Warm accent streaks
+  const N_WARM = 4;
+  for (let i = 0; i < N_WARM; i++) {
+    const t = rand();
+    const w = 10 + rand() * 35;
+    const h = H * (0.45 + rand() * 0.45);
+    const yOff = (rand() - 0.5) * H * 0.20;
+    const cx = t * W;
+    const cy = H * 0.5 + yOff;
+    const x = cx - w / 2;
+    const y = cy - h / 2;
+    const color = warmHues[Math.floor(rand() * warmHues.length)];
+    const a = 0.50 + rand() * 0.40;
+    streaks.push({ x, y, w, h, cx, cy, color, a, isCore: rand() < 0.6, isWarm: true });
+  }
+
+  const bokeh = [];
+  const N_BOKEH = 28;
+  for (let i = 0; i < N_BOKEH; i++) {
+    const isWarm = rand() < 0.22;
+    bokeh.push({
+      cx: rand() * W,
+      cy: rand() * H,
+      r: 8 + rand() * 38,
+      color: isWarm ? warmHues[Math.floor(rand() * warmHues.length)]
+                    : blueHues[Math.floor(rand() * blueHues.length)],
+      a: 0.20 + rand() * 0.45,
+    });
+  }
+
+  let streakSvg = '';
+  for (const s of streaks) {
+    streakSvg += `<defs><linearGradient id="lf-s-${s.x.toFixed(0)}-${s.y.toFixed(0)}" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="rgba(${s.color},0)"/>
+      <stop offset="18%" stop-color="rgba(${s.color},${(s.a * 0.45).toFixed(2)})"/>
+      <stop offset="50%" stop-color="rgba(${s.color},${s.a.toFixed(2)})"/>
+      <stop offset="82%" stop-color="rgba(${s.color},${(s.a * 0.45).toFixed(2)})"/>
+      <stop offset="100%" stop-color="rgba(${s.color},0)"/>
+    </linearGradient></defs>`;
+    streakSvg += `<rect x="${s.x.toFixed(1)}" y="${s.y.toFixed(1)}" width="${s.w.toFixed(1)}" height="${s.h.toFixed(1)}" fill="url(#lf-s-${s.x.toFixed(0)}-${s.y.toFixed(0)})"/>`;
+    if (s.isCore) {
+      const coreColor = s.isWarm ? '255,170,190' : '220,240,255';
+      const coreW = Math.min(s.w * 0.18, 4);
+      const coreX = s.cx - coreW / 2;
+      streakSvg += `<rect x="${coreX.toFixed(1)}" y="${s.y.toFixed(1)}" width="${coreW.toFixed(2)}" height="${s.h.toFixed(1)}" fill="rgba(${coreColor},${(s.a * 0.85).toFixed(2)})"/>`;
+    }
+  }
+
+  let bokehSvg = '';
+  for (const b of bokeh) {
+    bokehSvg += `<defs><radialGradient id="lf-b-${b.cx.toFixed(0)}-${b.cy.toFixed(0)}">
+      <stop offset="0%" stop-color="rgba(${b.color},${b.a.toFixed(2)})"/>
+      <stop offset="45%" stop-color="rgba(${b.color},${(b.a * 0.40).toFixed(2)})"/>
+      <stop offset="100%" stop-color="rgba(${b.color},0)"/>
+    </radialGradient></defs>`;
+    bokehSvg += `<circle cx="${b.cx.toFixed(1)}" cy="${b.cy.toFixed(1)}" r="${b.r.toFixed(1)}" fill="url(#lf-b-${b.cx.toFixed(0)}-${b.cy.toFixed(0)})"/>`;
+  }
+
+  return `<svg class="preview-lens-flares-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="lf-bloom-wide" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="22"/></filter>
+      <filter id="lf-bloom-mid" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="9"/></filter>
+      <filter id="lf-bloom-tight" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3"/></filter>
+    </defs>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="#000"/>
+    <g style="mix-blend-mode:screen" filter="url(#lf-bloom-wide)" opacity="0.6">${streakSvg}${bokehSvg}</g>
+    <g style="mix-blend-mode:screen" filter="url(#lf-bloom-mid)" opacity="0.7">${streakSvg}${bokehSvg}</g>
+    <g style="mix-blend-mode:screen" filter="url(#lf-bloom-tight)" opacity="0.8">${streakSvg}${bokehSvg}</g>
+  </svg>`;
+}
+
+/**
  * Render a static preview inside the given shadow root.
  * All visual values are baked into the CSS - no config-driven styling needed.
  * @param {ShadowRoot} shadowRoot
@@ -202,6 +312,7 @@ export function renderPreview(shadowRoot, config) {
       <div class="preview-label">${tt('editor.preview.label', 'Preview')}</div>
       <div class="preview-blur" style="${overlayStyle}"></div>
       ${skinId === 'waveform' ? `<div class="preview-waveform">${buildWaveformSVG()}</div>` : ''}
+      ${skinId === 'lens-flares' ? `<div class="preview-lens-flares">${buildLensFlaresSVG()}</div>` : ''}
       <div class="preview-bar${config.reactive_bar !== false ? ' reactive' : ''}"></div>
       <div class="preview-chat">
         <div class="preview-msg user">${tt('editor.preview.user_question', "What's the temperature outside?")}</div>
