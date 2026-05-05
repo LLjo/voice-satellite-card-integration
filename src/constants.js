@@ -101,6 +101,7 @@ export const DEFAULT_CONFIG = {
   // Timers
   hide_timer_pills: false,
   hide_timer_name_on_alert: false,
+  show_timer_name_in_pill: true,
 
   // Skin
   skin: 'default',

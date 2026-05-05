@@ -5,6 +5,18 @@
  */
 
 /**
+ * Truncate a timer name for display in the pill, capped at 25 characters
+ * with a literal "..." suffix when truncated.
+ * @param {string} name
+ * @param {number} [max=25]
+ * @returns {string}
+ */
+export function truncateTimerName(name, max = 25) {
+  if (!name) return '';
+  return name.length > max ? `${name.slice(0, max)}...` : name;
+}
+
+/**
  * Format seconds as HH:MM:SS.
  * @param {number} seconds
  * @returns {string}

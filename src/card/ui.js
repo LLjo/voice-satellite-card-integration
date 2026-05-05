@@ -9,8 +9,38 @@
 
 import { Timing } from '../constants.js';
 import { attachDoubleTap } from '../shared/double-tap.js';
-import { formatTime, formatPrice, formatLargeNumber, formatChange } from '../shared/format.js';
+import { formatTime, formatPrice, formatLargeNumber, formatChange, truncateTimerName } from '../shared/format.js';
 import { t } from '../i18n/index.js';
+
+// Split-pill layout for named timers. Skin-agnostic: uses currentColor so
+// the right-side tint reads correctly on both light and dark surfaces.
+// Appended to every skin's stylesheet so we don't have to duplicate it
+// across each skin CSS file.
+const TIMER_SPLIT_PILL_CSS = `
+.vs-timer-pill.vs-timer-split { padding: 0; overflow: hidden; }
+.vs-timer-pill.vs-timer-split .vs-timer-content {
+  gap: 0;
+  align-items: stretch;
+}
+.vs-timer-pill.vs-timer-split .vs-timer-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+}
+.vs-timer-pill.vs-timer-split .vs-timer-name-section {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.vs-timer-pill.vs-timer-split .vs-timer-time-section {
+  flex: 0 0 auto;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.vs-timer-pill.vs-timer-split .vs-timer-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}`;
 
 const CONDITION_LABEL_KEYS = {
   'sunny': 'full.ui.weather.conditions.sunny',
@@ -1030,11 +1060,16 @@ export class UIManager {
 
   /**
    * Create a timer pill element.
-   * @param {object} timer - Timer data { id, secondsLeft, totalSeconds }
+   * @param {object} timer - Timer data { id, name, secondsLeft, totalSeconds }
    * @param {Function} onDoubleTap - Callback for double-tap cancel
+   * @param {boolean} showName - Whether to render the timer name alongside
+   *   the countdown. Names longer than 25 characters are truncated with "...".
+   *   When true and the timer has a name, the pill renders as a split-pill
+   *   with two visually distinct sections (name on the left, countdown on
+   *   the right with a subtle currentColor tint).
    * @returns {HTMLElement}
    */
-  createTimerPill(timer, onDoubleTap) {
+  createTimerPill(timer, onDoubleTap, showName) {
     const pct = timer.totalSeconds > 0
       ? Math.max(0, (timer.secondsLeft / timer.totalSeconds) * 100)
       : 0;
@@ -1043,16 +1078,36 @@ export class UIManager {
     pill.className = 'vs-timer-pill';
     pill.setAttribute('data-timer-id', timer.id);
 
-    pill.innerHTML =
-      `<div class="vs-timer-progress" style="width:${pct}%"></div>` +
-      '<div class="vs-timer-content">' +
-        '<span class="vs-timer-icon">⏱</span>' +
-        `<span class="vs-timer-time">${formatTime(timer.secondsLeft)}</span>` +
-      '</div>';
+    const includeName = !!(showName && timer.name);
+
+    if (includeName) {
+      pill.classList.add('vs-timer-split');
+      pill.innerHTML =
+        `<div class="vs-timer-progress" style="width:${pct}%"></div>` +
+        '<div class="vs-timer-content">' +
+          '<div class="vs-timer-section vs-timer-name-section">' +
+            '<span class="vs-timer-icon">⏱</span>' +
+            '<span class="vs-timer-name"></span>' +
+          '</div>' +
+          '<div class="vs-timer-section vs-timer-time-section">' +
+            `<span class="vs-timer-time">${formatTime(timer.secondsLeft)}</span>` +
+          '</div>' +
+        '</div>';
+      // textContent (not innerHTML) to keep voice-set names safe.
+      pill.querySelector('.vs-timer-name').textContent = truncateTimerName(timer.name);
+    } else {
+      pill.innerHTML =
+        `<div class="vs-timer-progress" style="width:${pct}%"></div>` +
+        '<div class="vs-timer-content">' +
+          '<span class="vs-timer-icon">⏱</span>' +
+          `<span class="vs-timer-time">${formatTime(timer.secondsLeft)}</span>` +
+        '</div>';
+    }
 
     // Cache child references to avoid querySelector on every tick
     pill._vsTimeEl = pill.querySelector('.vs-timer-time');
     pill._vsProgressEl = pill.querySelector('.vs-timer-progress');
+    pill._nameShown = includeName;
 
     if (onDoubleTap) {
       attachDoubleTap(pill, onDoubleTap);
@@ -1063,11 +1118,12 @@ export class UIManager {
 
   /**
    * Sync timer pills to match the current timer list.
-   * @param {Array} timers - Array of { id, secondsLeft, totalSeconds, el }
+   * @param {Array} timers - Array of { id, name, secondsLeft, totalSeconds, el }
    * @param {Function} onDoubleTap - Factory: (timerId) => callback
    */
   syncTimerPills(timers, onDoubleTap) {
     this.ensureTimerContainer();
+    const showName = this._card.config?.show_timer_name_in_pill !== false;
 
     // Remove pills for timers that no longer exist
     const activeIds = new Set(timers.map((t) => t.id));
@@ -1078,10 +1134,21 @@ export class UIManager {
       }
     }
 
-    // Create pills for new timers
     for (const t of timers) {
+      const expectedNameShown = !!(showName && t.name);
+      const existing = this._timerPills.get(t.id);
+
+      // Rebuild the pill if the show-name toggle changed at runtime so
+      // the new state reflects on the next sync without waiting for the
+      // timer to be re-created server-side.
+      if (existing && existing._nameShown !== expectedNameShown) {
+        existing.parentNode?.removeChild(existing);
+        this._timerPills.delete(t.id);
+        t.el = null;
+      }
+
       if (!t.el || !this._timerContainer.contains(t.el)) {
-        t.el = this.createTimerPill(t, onDoubleTap(t.id));
+        t.el = this.createTimerPill(t, onDoubleTap(t.id), showName);
         this._timerContainer.appendChild(t.el);
         this._timerPills.set(t.id, t.el);
       }
@@ -1194,7 +1261,7 @@ export class UIManager {
       el.id = 'voice-satellite-styles';
       document.head.appendChild(el);
     }
-    el.textContent = skin.css;
+    el.textContent = skin.css + TIMER_SPLIT_PILL_CSS;
   }
 
   _applyTextScale() {

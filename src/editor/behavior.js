@@ -80,6 +80,7 @@ export const timersSchema = [
     flatten: true,
     schema: [
       { name: 'hide_timer_pills', default: false, selector: { boolean: {} } },
+      { name: 'show_timer_name_in_pill', default: true, selector: { boolean: {} } },
       { name: 'hide_timer_name_on_alert', default: false, selector: { boolean: {} } },
     ],
   },
@@ -90,6 +91,7 @@ export const behaviorLabels = {
   auto_start: t(null, 'editor.behavior.auto_start', 'Auto start'),
   debug: t(null, 'editor.behavior.debug', 'Debug logging'),
   hide_timer_pills: t(null, 'editor.behavior.hide_timer_pills', 'Hide on-screen countdown'),
+  show_timer_name_in_pill: t(null, 'editor.behavior.show_timer_name_in_pill', 'Show timer name inside pill'),
   hide_timer_name_on_alert: t(null, 'editor.behavior.hide_timer_name_on_alert', 'Hide timer name on alert'),
   // Wake-word group
   wake_word_noise_suppression: t(null, 'editor.behavior.noise_suppression', 'Noise suppression'),
@@ -111,6 +113,7 @@ export const behaviorHelpers = {
   wake_word_voice_isolation: t(null, 'editor.behavior.helper_voice_isolation', 'AI-based voice isolation, currently only available in Chrome'),
   stt_voice_isolation: t(null, 'editor.behavior.helper_voice_isolation', 'AI-based voice isolation, currently only available in Chrome'),
   hide_timer_pills: t(null, 'editor.behavior.helper_hide_timer_pills', 'Hide the countdown pill on screen. Timers still run and the alert still fires when they finish.'),
+  show_timer_name_in_pill: t(null, 'editor.behavior.helper_show_timer_name_in_pill', 'Display the timer name alongside the countdown in the pill (e.g. "Stir the sauce | 15:30"). Names longer than 25 characters are truncated.'),
   hide_timer_name_on_alert: t(null, 'editor.behavior.helper_hide_timer_name_on_alert', 'When a timer finishes, hide the timer name shown below the alert.'),
   stt_followup_delay_ms: t(null, 'editor.behavior.helper_stt_followup_delay_ms', 'Pause between the assistant finishing speaking and the mic listening again on follow-up turns. Use this if the tail of the response (last word or two) is being captured into your next reply. Common on tablets without hardware echo cancellation, especially with synthesized voices like Piper. Try 300-500 ms; leave at 0 if follow-ups already work cleanly.'),
   stt_followup_chime: t(null, 'editor.behavior.helper_stt_followup_chime', 'Play the wake chime when the mic starts listening for a follow-up turn, so you have an audible "speak now" cue. Pairs naturally with a non-zero follow-up listen delay.'),

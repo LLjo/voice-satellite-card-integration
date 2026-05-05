@@ -343,7 +343,7 @@ export class VoiceSatelliteSession {
       ...micKeys,
       'stt_followup_delay_ms', 'stt_followup_chime',
       'reactive_bar', 'reactive_bar_update_interval_ms',
-      'hide_timer_pills', 'hide_timer_name_on_alert',
+      'hide_timer_pills', 'hide_timer_name_on_alert', 'show_timer_name_in_pill',
       'screensaver_enabled', 'screensaver_timer_s', 'screensaver_dim_percent', 'screensaver_type',
       'screensaver_media_id', 'screensaver_media_interval_s', 'screensaver_media_shuffle',
       'screensaver_website_url',
@@ -384,6 +384,10 @@ export class VoiceSatelliteSession {
       for (const c of this._cards) {
         c.setConfig(config);
       }
+      // Live-refresh active timer pills so toggles like
+      // show_timer_name_in_pill or hide_timer_pills apply without waiting
+      // for the next state change from HA.
+      try { this._timer?.syncDOM(); } catch { /* no-op */ }
     }
 
     // Apply screensaver config changes (enable/disable, type, timer, media, etc.)

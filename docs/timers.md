@@ -108,11 +108,12 @@ Example template, true when the kitchen tablet has at least one running timer:
 
 ## Side panel options
 
-Two per-browser toggles under **Advanced > Timers** in the sidebar panel:
+Per-browser toggles under **Advanced > Timers** in the sidebar panel:
 
 | Setting | Default | Effect |
 |---------|---------|--------|
 | **Hide on-screen countdown** | Off | Suppresses the countdown pill while the timer is running. The timer still fires and the alert still plays at zero. Useful for tablets that double as a wall display where pills feel intrusive |
+| **Show timer name inside pill** | On | Renders the timer name alongside the countdown, e.g. `⏱ Stir the sauce \| 15:30`. Names longer than 25 characters are truncated with `...`. Unnamed timers always render as time-only |
 | **Hide timer name on alert** | Off | When a timer finishes, hides the timer name shown below the alert. The icon, time, and chime still appear |
 
-Both are stored per-browser in localStorage. Toggling them takes effect live without restarting the engine. Existing pills get torn down on the next tick when the hide-pills flag flips on.
+All three are stored per-browser in localStorage. Toggling them takes effect live without restarting the engine.
