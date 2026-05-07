@@ -208,19 +208,50 @@ export async function startListening(session) {
       session.timer.update();
       subscribeSatelliteEvents(session, (event) => dispatchSatelliteEvent(session, event));
       session.doubleTap.setup();
+      // Stop-word interruption can still run during voice_satellite.wake-
+      // triggered turns: mic comes up for STT and stays on through TTS,
+      // and tts/index.js already calls enableStopModel(true) for that
+      // playback window. Bring the runtime up in standby so it's ready.
+      const stopWordOnDisabled = getSwitchState(
+        session.hass, session.config.satellite_entity, 'stop_word',
+      ) === true;
+      if (stopWordOnDisabled) {
+        session._loadWakeWordModule()
+          .then((ww) => ww.start())
+          .catch((e) => {
+            session.logger.error('wake-word', `Stop-word standby start failed: ${e.message || e}`);
+          });
+      }
       return;
     }
 
     setState(session, State.CONNECTING);
     await session.audio.startMicrophone();
 
-    // On-device wake word: load module lazily, start local inference
+    // On-device wake word: load module lazily, start local inference.
+    // HA wake word mode + stop word switch on: also load the module so
+    // the local inference runtime is ready in standby for stop-word
+    // detection during interruptible states (TTS, alerts). The pipeline
+    // still starts normally so HA handles wake detection server-side.
+    const stopWordOn = getSwitchState(
+      session.hass, session.config.satellite_entity, 'stop_word',
+    ) === true;
     if (mode === WAKE_MODE_LOCAL) {
       const ww = await session._loadWakeWordModule();
       await settleBeforeWakeWordStart(session);
       await ww.start();
     } else {
       await session.pipeline.start();
+      if (mode === WAKE_MODE_HA && stopWordOn) {
+        // Load runtime in standby. Failure here is non-fatal — stop-word
+        // interruption simply won't be available, but server-side wake
+        // detection and the rest of the pipeline still work.
+        session._loadWakeWordModule()
+          .then((ww) => ww.start())
+          .catch((e) => {
+            session.logger.error('wake-word', `Stop-word standby start failed: ${e.message || e}`);
+          });
+      }
     }
 
     session._hasStarted = true;

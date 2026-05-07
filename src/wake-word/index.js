@@ -114,17 +114,55 @@ export class WakeWordManager {
   get stopOnlyMode() { return this._stopOnlyMode; }
 
   /**
-   * Check if on-device wake word detection is enabled.
-   * @returns {boolean}
+   * Read the current wake word detection mode select.
+   * @returns {'On Device'|'Home Assistant'|'Disabled'}
    */
-  isEnabled() {
-    const mode = getSelectState(
+  _wakeMode() {
+    return getSelectState(
       this._session.hass,
       this._session.config.satellite_entity,
       'wake_word_detection',
       'Home Assistant',
     );
-    return mode === 'On Device';
+  }
+
+  /**
+   * True when on-device wake word inference is the primary listening mode.
+   * Wake-word models load and run continuously in this mode.
+   * @returns {boolean}
+   */
+  isOnDeviceWakeEnabled() {
+    return this._wakeMode() === 'On Device';
+  }
+
+  /**
+   * True whenever the local inference subsystem is needed at all. Covers
+   * three cases:
+   *  - On-device wake word mode (continuous inference).
+   *  - Home Assistant wake word mode + stop-word switch on (runtime sits
+   *    idle and only runs during interruptible states like TTS).
+   *  - Disabled wake word mode + stop-word switch on (same standby
+   *    pattern; the mic is off at idle but comes up during
+   *    voice_satellite.wake-triggered turns, and stop-word works during
+   *    the TTS playback window of those turns).
+   *
+   * Returns false in the common stop-off cases so the user pays zero
+   * local inference cost.
+   * @returns {boolean}
+   */
+  needsLocalInference() {
+    if (this._wakeMode() === 'On Device') return true;
+    return this.isStopWordEnabled();
+  }
+
+  /**
+   * Backwards-compat alias. Older callers expected a single "is on-device
+   * wake enabled" gate. Keep returning that semantic so the few external
+   * callsites (pipeline/index.js etc.) don't change behavior.
+   * @returns {boolean}
+   */
+  isEnabled() {
+    return this.isOnDeviceWakeEnabled();
   }
 
   /**
@@ -280,13 +318,32 @@ export class WakeWordManager {
 
   /**
    * Start wake word detection. Initializes the model runtime on first call.
+   *
+   * Two distinct startup paths:
+   *  - On-device wake mode: load wake-word models and begin continuous
+   *    inference (sets _active = true).
+   *  - Home Assistant wake mode + stop-word on: load only the runtime and
+   *    create an empty inference engine. _active stays false; the engine
+   *    sits dormant until enableStopModel(true) fires when an
+   *    interruptible state begins (TTS, notification, timer alert), and
+   *    is torn down via disableStopModel() when the state ends.
    */
   async start() {
     if (this._active || this._resetting) return;
+    if (!this.needsLocalInference()) {
+      this._log.log('wake-word', 'Local inference not needed — skipping start');
+      return;
+    }
 
-    const activeModels = this.getActiveModels();
-    const modelsKey = activeModels.slice().sort().join(',');
-    this._log.log('wake-word', `Starting on-device detection (models: ${activeModels.join(', ')})`);
+    const onDevice = this.isOnDeviceWakeEnabled();
+    const wakeModels = onDevice ? this.getActiveModels() : [];
+    const modelsKey = wakeModels.slice().sort().join(',');
+    this._log.log(
+      'wake-word',
+      onDevice
+        ? `Starting on-device detection (models: ${wakeModels.join(', ')})`
+        : 'Starting stop-word standby (HA wake mode + stop-word on)',
+    );
 
     try {
       if (!this._tfweb) {
@@ -306,25 +363,33 @@ export class WakeWordManager {
           await this._recreateRuntime('stale runtime before model reload');
         }
         // Release models no longer needed before loading new ones.
-        await releaseUnusedMicroModels(activeModels);
-        this._log.log('wake-word', 'Loading wake word models...');
-        const runners = await loadMicroModels(
-          this._tfweb,
-          activeModels,
-          (name) => this._log.log('wake-word', `Loading model: ${name}`),
-        );
+        await releaseUnusedMicroModels(wakeModels);
 
-        const keywordConfigs = this._buildKeywordConfigs(runners);
+        let keywordConfigs = [];
+        if (wakeModels.length > 0) {
+          this._log.log('wake-word', 'Loading wake word models...');
+          const runners = await loadMicroModels(
+            this._tfweb,
+            wakeModels,
+            (name) => this._log.log('wake-word', `Loading model: ${name}`),
+          );
+          keywordConfigs = this._buildKeywordConfigs(runners);
+        }
+
         this._inference = await MicroWakeWordInference.create(
           keywordConfigs, this._log, this._getSensitivityLabel(), this._isNoiseGateEnabled(),
         );
         this._loadedModelsKey = modelsKey;
 
-        const configSummary = keywordConfigs.map((k) => `${k.name}(c=${k.cutoff},sw=${k.slidingWindow})`).join(', ');
-        this._log.log('wake-word', `Wake word models loaded: ${configSummary}`);
-      } else {
+        if (keywordConfigs.length > 0) {
+          const configSummary = keywordConfigs.map((k) => `${k.name}(c=${k.cutoff},sw=${k.slidingWindow})`).join(', ');
+          this._log.log('wake-word', `Wake word models loaded: ${configSummary}`);
+        } else {
+          this._log.log('wake-word', 'Inference engine ready (no wake models loaded — stop-word standby)');
+        }
+      } else if (wakeModels.length > 0) {
         this._inference.updateThresholds(
-          activeModels.map((name) => ({ name, threshold: this.getThresholdForModel(name) })),
+          wakeModels.map((name) => ({ name, threshold: this.getThresholdForModel(name) })),
         );
         this._inference.updateEnergyThresholds(this._getSensitivityLabel());
         this._inference.reset();
@@ -333,9 +398,18 @@ export class WakeWordManager {
       this._sampleBufLen = 0;
       this._frameQueue.length = 0;
       this._processing = false;
-      this._active = true;
-      this._session.setState(State.LISTENING);
-      this._log.log('wake-word', 'On-device wake word detection active');
+      if (onDevice) {
+        this._active = true;
+        this._session.setState(State.LISTENING);
+        this._log.log('wake-word', 'On-device wake word detection active');
+      } else {
+        // HA + stop standby: stay idle. feedAudio() short-circuits when
+        // !_active && !_stopOnlyMode, so audio frames are dropped at the
+        // door. The runtime only spins up when enableStopModel(true)
+        // flips _stopOnlyMode for an interruptible state.
+        this._active = false;
+        this._log.log('wake-word', 'Stop-word standby ready');
+      }
 
     } catch (e) {
       const msg = e?.message || String(e);
@@ -819,6 +893,17 @@ export class WakeWordManager {
       return;
     }
 
+    // When the local runtime is in standby (HA or Disabled wake mode +
+    // stop-word on), there are no wake-word models loaded for stop to
+    // run "alongside", and _active stays false. Callers like media
+    // playback and timer alerts pass stopOnly=false intending to keep
+    // wake words active — but with none loaded, that branch leaves the
+    // audio gate (_active || _stopOnlyMode) closed and stop never fires.
+    // Coerce to stopOnly so _stopOnlyMode flips on and audio flows.
+    if (!stopOnly && !this.isOnDeviceWakeEnabled()) {
+      stopOnly = true;
+    }
+
     try {
       if (!this._tfweb) return;
 
@@ -906,11 +991,23 @@ export class WakeWordManager {
       // to normal wake-word listening so stale stop-model/TTS state doesn't
       // carry into the restored wake-word detectors.
       this._inference.reset();
-      this._active = true;
+      // Only resume continuous inference if on-device wake is the active
+      // listening mode. In HA + stop standby, returning to _active = true
+      // would start running the empty inference engine on every audio
+      // frame for no reason — defeats the whole "zero local cost when not
+      // interrupting" promise.
+      this._active = this.isOnDeviceWakeEnabled();
       this._sampleBufLen = 0;
       this._frameQueue.length = 0;
       this._processing = false;
-      if (log) this._log.log('stop-word', 'Disabled (stop-only mode off)');
+      if (log) {
+        this._log.log(
+          'stop-word',
+          this._active
+            ? 'Disabled (stop-only mode off, wake-word inference resumed)'
+            : 'Disabled (stop-only mode off, returning to standby)',
+        );
+      }
     } else if (log) {
       this._log.log('stop-word', 'Disabled');
     }
@@ -1118,6 +1215,29 @@ export class WakeWordManager {
     if (stopWordChanged && !stopWord) {
       this.disableStopModel({ log: false });
       this._log.log('stop-word', 'Disabled in satellite settings');
+      // When wake mode is HA or Disabled, stop-word was the only reason
+      // the local runtime existed. Tear it down so the user pays zero
+      // local CPU/RAM cost again, matching the performance contract.
+      if (!this.isOnDeviceWakeEnabled()) {
+        this._log.log('wake-word', 'Stop-word off without on-device wake — releasing local runtime');
+        this.stop();
+        this._destroyInference('stop-word disabled');
+        this._loadedModelsKey = null;
+        this._stopMicroConfig = null;
+        resetRuntime().catch(() => { /* best-effort */ });
+        this._tfweb = null;
+      }
+    }
+
+    if (stopWordChanged && stopWord && !this.isOnDeviceWakeEnabled() && !this._tfweb) {
+      // HA / Disabled wake mode + stop word just turned ON: bring up the
+      // runtime in standby so subsequent enableStopModel(true) calls
+      // (during TTS, notifications, alerts) have an inference engine to
+      // attach to.
+      this._log.log('wake-word', 'Stop-word on without on-device wake — loading runtime to standby');
+      this.start().catch((e) => {
+        this._log.error('wake-word', `Standby start failed: ${e.message || e}`);
+      });
     }
 
     // Mode or model change requires switching (slot 2 changes are
@@ -1174,6 +1294,14 @@ export class WakeWordManager {
             } else {
               session.setState(State.CONNECTING);
               await session.pipeline.start();
+            }
+            // Stop-word standby covers both transitions (On Device → HA
+            // and On Device → Disabled): if the user has it enabled, the
+            // local runtime returns in standby for TTS / alert windows.
+            if (this.isStopWordEnabled()) {
+              this.start().catch((e) => {
+                this._log.error('wake-word', `Stop-word standby start failed: ${e.message || e}`);
+              });
             }
           }
         }

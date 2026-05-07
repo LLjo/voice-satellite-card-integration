@@ -24,7 +24,7 @@ import { AskQuestionManager } from '../ask-question';
 import { StartConversationManager } from '../start-conversation';
 import { ShowManager } from '../show';
 import { MediaPlayerManager } from '../media-player';
-import { getSelectEntityId, getNumberState, getSelectState } from '../shared/satellite-state.js';
+import { getSelectEntityId, getNumberState, getSelectState, getSwitchState } from '../shared/satellite-state.js';
 import { ScreensaverManager } from '../screensaver';
 import { DiagnosticsManager } from '../diagnostics';
 import { ToastManager } from '../toast';
@@ -526,21 +526,41 @@ export class VoiceSatelliteSession {
 
   /**
    * Called from updateHass() when the wake word module isn't loaded yet.
-   * Detects if the user just enabled on-device mode and loads the module.
+   * Loads the module on three transitions:
+   *  - Mode flipped to On Device: load and start continuous inference.
+   *  - HA mode + stop-word switch just turned on: load and start in
+   *    standby so stop-word interruption works during TTS / alerts.
+   *  - Disabled mode + stop-word switch just turned on: same standby
+   *    pattern, mic comes up during voice_satellite.wake-triggered turns
+   *    and stop-word works during the TTS window of those turns.
    */
   async _checkWakeWordActivation() {
-    if (this._wakeWordLoading || !this._isWakeWordEnabled()) return;
+    if (this._wakeWordLoading) return;
+    const onDevice = this._isWakeWordEnabled();
+    const stopWordOn = getSwitchState(
+      this._hass, this._config.satellite_entity, 'stop_word',
+    ) === true;
+    const standbyNeeded = !onDevice && stopWordOn;
+    if (!onDevice && !standbyNeeded) return;
     this._wakeWordLoading = true;
     try {
       await this._loadWakeWordModule();
-      // If in listening/idle state, switch from HA pipeline to on-device.
-      // Coming from disabled mode the mic is off — bring it up first.
-      if ([State.LISTENING, State.IDLE].includes(this._state)) {
+      if (onDevice && [State.LISTENING, State.IDLE].includes(this._state)) {
+        // If in listening/idle state, switch from HA pipeline to on-device.
+        // Coming from disabled mode the mic is off — bring it up first.
         this._logger.log('wake-word', 'Mode changed to On Device — loading');
         this._pipeline.stop();
         if (!this._audio._mediaStream) {
           await this._audio.startMicrophone('wake_word');
         }
+        await this._wakeWord.start();
+      } else if (standbyNeeded) {
+        // HA / Disabled wake mode, stop-word just enabled — bring up the
+        // local inference runtime in standby. In HA mode the pipeline is
+        // already running for server-side wake detection; in Disabled
+        // mode the mic is off and the runtime simply waits for TTS to
+        // call enableStopModel(true) during the next wake-triggered turn.
+        this._logger.log('wake-word', 'Stop-word on without on-device wake — standby start');
         await this._wakeWord.start();
       }
     } catch (e) {
