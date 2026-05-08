@@ -20,7 +20,6 @@ Both engines run entirely in the browser in pure JavaScript and produce the same
 |---|---|---|
 | Where it runs | CPU only | Mel + embedding on GPU, classifiers on CPU |
 | Architecture | Per-keyword streaming model. One full model per wake word | Shared mel + embedding feeding small per-keyword classifiers |
-| Model size | ~50 KB per keyword | ~3 MB shared (mel + embedding) + ~200 KB per keyword classifier |
 | Multi-keyword scaling | Each added keyword pays full model cost on CPU - doubles for two keywords | Near-flat - mel + embedding are shared, each added keyword adds only a sub-millisecond classifier |
 | Detection robustness | Tight, narrow models tuned per-phrase. Strong on the trained phrase, less forgiving across speakers and accents | Larger embedding generalizes across speakers, accents, and acoustic conditions |
 | Requires WebGPU | No | **Yes** - the engine refuses to start without it |
@@ -35,17 +34,6 @@ Both engines run entirely in the browser in pure JavaScript and produce the same
 - **Same performance, increased reliability.** openWakeWord models are 10x the size of their microWakeWord counterparts but inference performance is nearly the same due to GPU acceleration.
 - **Better generalization across speakers and accents.** The 96-dim shared embedding was trained on a much broader speech corpus than any single MWW model, so detection is more forgiving of who's talking and how.
 - **Near-free multi-keyword scaling.** Mel + embedding are computed once per chunk regardless of how many keywords you've loaded. Adding a second keyword adds only a sub-millisecond classifier on the existing embedding output.
-
-### Performance
-
-Per-chunk inference latency measured on a modern desktop / laptop with WebGPU, single keyword, via the wake-word tester (full pipeline including worker round-trip, what the user actually experiences):
-
-| Engine | avg | p50 | p95 | p99 | max |
-|---|---|---|---|---|---|
-| microWakeWord (CPU) | 1.4 ms | 1.2 ms | 2.4 ms | 6.0 ms | 6.0 ms |
-| openWakeWord (GPU) | 5.2 ms | 7.0 ms | 10.4 ms | 11.0 ms | 11.0 ms |
-
-Both engines run comfortably under the 80 ms per-chunk real-time budget. MWW is faster in absolute terms because its streaming int8 model is tiny; OWW pays a fixed cost for the larger mel + embedding pipeline, but that cost stays flat as more keywords are added. To capture numbers on your own hardware, open the tester and read the `[diag] perf ...` lines from the log pane.
 
 ### Default and fallback
 microWakeWord is the default detection mode on fresh installs because it works on every device. If you select openWakeWord on a device without WebGPU, the satellite shows an error toast and asks you to switch back - the GPU requirement is enforced, not a soft fallback.
@@ -69,33 +57,6 @@ The browser continuously processes audio and runs lightweight keyword classifier
 - **No wake word add-on required** - works without openWakeWord or microWakeWord installed on HA
 - **Energy-efficient** - optional noise gate pauses inference during silence and resumes instantly when sound is detected (enable via the "Wake word noise gate" switch)
 - **Optional stop-word interruption** - enable the "Stop word interruption" switch if you want the browser to listen for `stop` during timer alerts, TTS, and announcement playback
-
-## Built-in Wake Words
-
-### microWakeWord
-
-| Model | Wake Phrase |
-|-------|-------------|
-| **ok_nabu** (default) | "OK Nabu" |
-| **hey_jarvis** | "Hey Jarvis" |
-| **alexa** | "Alexa" |
-| **hey_mycroft** | "Hey Mycroft" |
-| **hey_home_assistant** | "Hey Home Assistant" |
-| **hey_luna** | "Hey Luna" |
-| **hey_baby** | "Hey Baby" |
-| **okay_computer** | "Okay Computer" |
-
-### openWakeWord
-
-| Model | Wake Phrase |
-|-------|-------------|
-| **ok_nabu** (default) | "OK Nabu" |
-| **hey_jarvis** | "Hey Jarvis" |
-| **alexa** | "Alexa" |
-| **hey_mycroft** | "Hey Mycroft" |
-| **hey_rhasspy** | "Hey Rhasspy" |
-
-The OWW models shipped here come from the [`rhasspy/pyopen-wakeword`](https://github.com/rhasspy/pyopen-wakeword) package - the same files the official Home Assistant openWakeWord add-on ships, byte-identical.
 
 ## Custom Wake Words
 
