@@ -303,11 +303,22 @@ function isWakeEngineMissingError(errorCode, errorMessage) {
     || msg.includes('no wake word detection engine');
 }
 
+const HANDLED_INTENT_ERROR_CODES = new Set([
+  'no_intent_match',
+  'no_valid_targets',
+]);
+
+function getIntentErrorCode(eventData) {
+  const code = eventData?.intent_output?.response?.data?.code;
+  return typeof code === 'string' ? code.toLowerCase() : '';
+}
+
 /** @param {import('./index.js').PipelineManager} mgr */
 export function handleIntentEnd(mgr, eventData) {
   const responseType = eventData?.intent_output?.response?.response_type;
+  const intentErrorCode = responseType === 'error' ? getIntentErrorCode(eventData) : '';
 
-  if (responseType === 'error') {
+  if (responseType === 'error' && !HANDLED_INTENT_ERROR_CODES.has(intentErrorCode)) {
     const errorText = extractResponseText(eventData) || 'An error occurred';
     mgr.log.error('error', `Intent error: ${errorText}`);
 
@@ -329,6 +340,10 @@ export function handleIntentEnd(mgr, eventData) {
     mgr.card.chat.removeThinking();
     mgr.card.chat.streamedResponse = '';
     return;
+  }
+
+  if (intentErrorCode) {
+    mgr.log.log('pipeline', `Handled intent response: ${intentErrorCode}`);
   }
 
   const responseText = extractResponseText(eventData);

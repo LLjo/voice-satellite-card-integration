@@ -83,7 +83,9 @@ export class TtsManager {
     // Stop-word arming (if enabled) still happens on its 250 ms delay
     // timer below - that's about AEC settling for the stop classifier,
     // independent of suspending wake-word detection.
-    this._card.wakeWord?.suspendForPlayback();
+    if (!isRetry) {
+      this._card.wakeWord?.suspendForPlayback();
+    }
     // Reset diagnostic timing - the 'Playback complete' log will compare
     // these against the actual end time to detect early stream-close.
     this._playStartTs = performance.now();
@@ -225,6 +227,7 @@ export class TtsManager {
     this._pendingTtsEndUrl = null;
     this._clearWatchdog();
     this._disableStopWord();
+    this._card.wakeWord?.resumeFromPlayback();
 
     if (this._endTimer) {
       clearTimeout(this._endTimer);
