@@ -99,6 +99,8 @@ export class OwwInference {
       throw new Error('OwwInference: must provide at least one classifier');
     }
     this.classifiers = classifiers;
+    this._classifierEntries = Object.entries(classifiers);
+    this._probOutput = {};
 
     // Audio history: last 480 samples, prepended to each new chunk so
     // the mel CNN can produce continuous STFT frames across the chunk
@@ -114,7 +116,7 @@ export class OwwInference {
     // One state per classifier (each classifier may have its own internal
     // state, e.g. the IF-branch BatchNorm in hey_jarvis subgraph 0).
     this._classifierStates = {};
-    for (const [name, model] of Object.entries(this.classifiers)) {
+    for (const [name, model] of this._classifierEntries) {
       this._classifierStates[name] = model.createState();
     }
     // Reusable input buffer for the classifier stage.
@@ -127,13 +129,13 @@ export class OwwInference {
     // and old ones drop off when we exceed MEL_BUFFER_MAX.
     this._melBuffer = new Float32Array(MEL_BUFFER_MAX * MEL_BINS);
     this._melBufferLen = 0;
-    // Embedding ring: pre-allocated pool of Float32Array(EMBEDDING_DIM)
-    // slots that we cycle through, so processChunk never allocates.
+    // Embedding ring: fixed slots and newest write position. Avoid
+    // Array.shift() on every steady-state chunk.
     this._featureBuffer = [];
-    this._featurePool = [];
-    for (let i = 0; i < FEATURE_BUFFER_MAX + 1; i++) {
-      this._featurePool.push(new Float32Array(EMBEDDING_DIM));
+    for (let i = 0; i < FEATURE_BUFFER_MAX; i++) {
+      this._featureBuffer.push(new Float32Array(EMBEDDING_DIM));
     }
+    this._featureWrite = 0;
 
     // Initialize mel buffer with ones (76 × 32) - openWakeWord upstream.
     this._initMelBuffer();
@@ -192,15 +194,14 @@ export class OwwInference {
       const emb = this._embeddingGpuRunner
         ? await this._embeddingGpuRunner.invoke(embIn)
         : this.embedding.invoke(embIn, { state: this._embeddingState });
-      let slot;
-      if (this._featureBuffer.length >= FEATURE_BUFFER_MAX) {
-        slot = this._featureBuffer.shift();
-      } else {
-        slot = this._featurePool.pop() || new Float32Array(EMBEDDING_DIM);
-      }
-      slot.set(emb);
-      this._featureBuffer.push(slot);
+      this._appendEmbedding(emb);
     }
+  }
+
+  _appendEmbedding(emb) {
+    const slot = this._featureBuffer[this._featureWrite];
+    slot.set(emb);
+    this._featureWrite = (this._featureWrite + 1) % FEATURE_BUFFER_MAX;
   }
 
   /**
@@ -214,27 +215,21 @@ export class OwwInference {
    * Cheap (no model invocations): zeros out audio history + mel buffer,
    * recreates per-model TFLite state, fills the feature ring with
    * zero-embeddings.  Recall: ok_nabu(zeros) ≈ 1e-3 in our offline tests,
-   * so an all-zero classifier window produces near-zero score - the
-   * smoothing window then fills with real audio over the next 240 ms.
+   * so an all-zero classifier window produces near-zero score until real
+   * audio embeddings replace the reset state.
    */
   reset() {
     this._audioHistory.fill(0);
     this._initMelBuffer();
     this._melState = this.melspec.createState();
     this._embeddingState = this.embedding.createState();
-    for (const [name, model] of Object.entries(this.classifiers)) {
+    for (const [name, model] of this._classifierEntries) {
       this._classifierStates[name] = model.createState();
     }
-    // Recycle existing feature slots back to the pool, then pull
-    // fresh zero-filled ones for the new buffer.  This keeps the
-    // pool size bounded and avoids per-reset allocation.
-    while (this._featureBuffer.length > 0) {
-      this._featurePool.push(this._featureBuffer.pop());
-    }
+    this._featureWrite = 0;
     for (let i = 0; i < EMBEDDING_WINDOW; i++) {
-      const slot = this._featurePool.pop() || new Float32Array(EMBEDDING_DIM);
-      slot.fill(0);
-      this._featureBuffer.push(slot);
+      this._featureBuffer[i].fill(0);
+      this._featureWrite++;
     }
   }
 
@@ -313,24 +308,22 @@ export class OwwInference {
     const emb = this._embeddingGpuRunner
       ? await this._embeddingGpuRunner.invoke(embIn)
       : this.embedding.invoke(embIn, { state: this._embeddingState });
-    let slot;
-    if (this._featureBuffer.length >= FEATURE_BUFFER_MAX) {
-      slot = this._featureBuffer.shift();
-    } else {
-      slot = this._featurePool.pop() || new Float32Array(EMBEDDING_DIM);
-    }
-    slot.set(emb);
-    this._featureBuffer.push(slot);
+    this._appendEmbedding(emb);
 
     // Stage 3: classify the latest 16 embeddings - only for active
     // classifiers.  Inactive ones are skipped entirely (no inference
     // run), matching microWakeWord's addKeyword/removeKeyword behavior.
-    const start = this._featureBuffer.length - EMBEDDING_WINDOW;
     for (let i = 0; i < EMBEDDING_WINDOW; i++) {
-      this._classifierInput.set(this._featureBuffer[start + i], i * EMBEDDING_DIM);
+      const idx = (
+        this._featureWrite - EMBEDDING_WINDOW + i + FEATURE_BUFFER_MAX
+      ) % FEATURE_BUFFER_MAX;
+      this._classifierInput.set(this._featureBuffer[idx], i * EMBEDDING_DIM);
     }
-    const probs = {};
-    for (const [name, model] of Object.entries(this.classifiers)) {
+    const probs = this._probOutput;
+    for (let i = 0; i < this._classifierEntries.length; i++) {
+      delete probs[this._classifierEntries[i][0]];
+    }
+    for (const [name, model] of this._classifierEntries) {
       if (activeKeywords && !activeKeywords.has(name)) continue;
       const out = model.invoke(this._classifierInput, { state: this._classifierStates[name] });
       probs[name] = out[0];

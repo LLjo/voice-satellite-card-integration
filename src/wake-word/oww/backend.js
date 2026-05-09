@@ -9,8 +9,8 @@
  * Differences from MWW worth knowing about:
  *   - vadScore is always 0 (OWW has no separate VAD head).
  *   - rms is computed from the raw chunk so the tester meter still works.
- *   - There's no sliding-window mean - OWW's classifier output IS the
- *     instantaneous probability and we threshold it directly.
+ *   - OWW's classifier output is a frame-level probability and we
+ *     threshold it directly.
  */
 
 import { OwwInference, CHUNK_SAMPLES } from './inference.js';
@@ -36,20 +36,21 @@ const SLEEP_CHUNKS = 30; // ~2.4 s of silence before sleeping
 // Minimum gap between successive triggers - prevents one extended
 // utterance from firing multiple times.  Same value microWakeWord uses.
 const COOLDOWN_MS = 2000;
-// Sliding-window length over which we average classifier scores
-// before thresholding.  240 ms (3 × 80 ms): smoothing kills brief
-// 1-chunk transients without drowning short ~500 ms wake words the
-// way a 5-chunk window did.  Borderline-confirm gate runs on the
-// smoothed mean - only scores in the (cutoff, cutoff + margin) band
-// need a second crossing to confirm.
-const SCORE_WINDOW = 3;
+// Detection uses the current frame-level OWW probability, matching
+// upstream openWakeWord.  Averaging before thresholding made low-SNR/noisy
+// wake words miss when they produced one strong frame surrounded by weaker
+// frames.
+// Buffer recent raw audio while the optional energy gate sleeps.  MWW
+// keeps feature lookback for the same reason: the chunk that wakes the
+// gate may already be partway through the wake phrase.
+const SLEEP_BUFFER_CHUNKS = 8; // ~640 ms
 // Borderline-confirmation gate, mirrored from microWakeWord
-// (micro-inference.js _shouldTriggerKeyword).  Smoothed means
-// strictly above (cutoff + margin) fire immediately.  Means in the
+// (micro-inference.js _shouldTriggerKeyword).  Current frame scores
+// strictly above (cutoff + margin) fire immediately.  Scores in the
 // narrow (cutoff, cutoff + margin] band must repeat within
 // BORDERLINE_CONFIRM_WINDOW_MS to fire - otherwise the candidate is
 // dropped.  Catches the "ok google" → ok_nabu pattern where one
-// chunk's smoothed mean grazes cutoff before fading.
+// chunk's score grazes cutoff before fading.
 const BORDERLINE_CONFIRM_MARGIN = 0.03;
 const BORDERLINE_CONFIRM_WINDOW_MS = 750;
 export class OwwBackend {
@@ -78,15 +79,14 @@ export class OwwBackend {
     // score as a possible trigger.  Used by stop-word standby + stop-only
     // mode in WakeWordManager.
     this._activeKeywords = new Set(Object.keys(cutoffs));
+    this._keywordNames = Object.keys(cutoffs);
     // Latest per-keyword classifier scores from the most recent processChunk.
     // The panel tester polls this to draw its probability chart.
     this._latestScores = {};
-    // Per-keyword sliding-window state for score smoothing.  Each entry
-    // holds a circular Float32Array(SCORE_WINDOW), the running sum, and
-    // a write head + count.  Trigger logic operates on the WINDOW MEAN
-    // rather than the per-chunk score so brief FP transients can't fire.
+    // Per-keyword state for borderline confirmation.
+    // Trigger logic uses the current frame score.
     this._scoreWindows = {};
-    for (const name of Object.keys(cutoffs)) {
+    for (const name of this._keywordNames) {
       this._scoreWindows[name] = this._makeWindow();
     }
     // Last accepted-trigger timestamp (any keyword).  Used to enforce
@@ -98,6 +98,12 @@ export class OwwBackend {
     // when it crosses SLEEP_CHUNKS and wake immediately on RMS ≥ WAKE_RMS.
     this._sleeping = true;
     this._silentChunks = SLEEP_CHUNKS;
+    this._sleepBuf = [];
+    for (let i = 0; i < SLEEP_BUFFER_CHUNKS; i++) {
+      this._sleepBuf.push(new Float32Array(CHUNK_SAMPLES));
+    }
+    this._sleepBufHead = 0;
+    this._sleepBufLen = 0;
   }
 
   /**
@@ -164,10 +170,6 @@ export class OwwBackend {
   /** Build a fresh per-keyword sliding-window + pending-confirm record. */
   _makeWindow() {
     return {
-      buf: new Float32Array(SCORE_WINDOW),
-      sum: 0,
-      head: 0,
-      count: 0,
       pendingConfirm: false,
       pendingConfirmAt: 0,
       pendingConfirmScore: 0,
@@ -179,6 +181,28 @@ export class OwwBackend {
     let sum = 0;
     for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
     return Math.sqrt(sum / samples.length);
+  }
+
+  _bufferSleepingChunk(samples) {
+    const slot = this._sleepBuf[this._sleepBufHead];
+    slot.set(samples);
+    this._sleepBufHead = (this._sleepBufHead + 1) % SLEEP_BUFFER_CHUNKS;
+    if (this._sleepBufLen < SLEEP_BUFFER_CHUNKS) this._sleepBufLen++;
+  }
+
+  _clearSleepBuffer() {
+    this._sleepBufHead = 0;
+    this._sleepBufLen = 0;
+  }
+
+  _sleepBufferOrdered() {
+    const out = [];
+    let idx = (this._sleepBufHead - this._sleepBufLen + SLEEP_BUFFER_CHUNKS) % SLEEP_BUFFER_CHUNKS;
+    for (let i = 0; i < this._sleepBufLen; i++) {
+      out.push(this._sleepBuf[idx]);
+      idx = (idx + 1) % SLEEP_BUFFER_CHUNKS;
+    }
+    return out;
   }
 
   /**
@@ -195,8 +219,8 @@ export class OwwBackend {
     if (samples.length !== CHUNK_SAMPLES) {
       throw new Error(`OWW chunk must be ${CHUNK_SAMPLES} samples, got ${samples.length}`);
     }
-    const rms = this._rms(samples);
-    this._latestRms = rms;
+    const rms = this._energyGateEnabled ? this._rms(samples) : null;
+    if (rms !== null) this._latestRms = rms;
 
     // Energy gate: hysteresis-based silence skip.  Saves the entire
     // mel + embedding + classifier pipeline (~25 ms per chunk) when
@@ -209,8 +233,12 @@ export class OwwBackend {
         if (rms >= this._wakeRms) {
           this._sleeping = false;
           this._silentChunks = 0;
-          this._log?.log?.('wake-word', `OWW wake - inference resumed (rms=${rms.toFixed(4)})`);
+          this._log?.log?.(
+            'wake-word',
+            `OWW wake - inference resumed (rms=${rms.toFixed(4)}, buffered=${this._sleepBufLen} chunks)`,
+          );
         } else {
+          this._bufferSleepingChunk(samples);
           // Stay asleep - return a no-detection result.  perModelScores
           // intentionally stays empty so the panel chart visibly idles
           // (the fallback in getLatestSmoothedProbability returns 0).
@@ -244,35 +272,43 @@ export class OwwBackend {
       }
     }
 
+    if (this._energyGateEnabled && this._sleepBufLen > 0) {
+      const replay = this._sleepBufferOrdered();
+      this._clearSleepBuffer();
+      for (const buffered of replay) {
+        const replayResult = await this._processInferenceChunk(buffered, this._rms(buffered));
+        if (replayResult.detected) return replayResult;
+      }
+    }
+
+    return this._processInferenceChunk(samples, rms);
+  }
+
+  async _processInferenceChunk(samples, rms) {
     // Scale ±1 float32 to int16 range for the OWW pipeline.  Use a
     // pre-allocated scratch buffer so we don't churn the GC every chunk.
     if (!this._scaledChunk) this._scaledChunk = new Float32Array(CHUNK_SAMPLES);
     const scaled = this._scaledChunk;
-    for (let i = 0; i < CHUNK_SAMPLES; i++) scaled[i] = samples[i] * 32768;
+    if (rms === null) {
+      let sumSq = 0;
+      for (let i = 0; i < CHUNK_SAMPLES; i++) {
+        const sample = samples[i];
+        sumSq += sample * sample;
+        scaled[i] = sample * 32768;
+      }
+      rms = Math.sqrt(sumSq / CHUNK_SAMPLES);
+      this._latestRms = rms;
+    } else {
+      for (let i = 0; i < CHUNK_SAMPLES; i++) scaled[i] = samples[i] * 32768;
+    }
 
     const { probs } = await this._inference.processChunk(scaled, {
       activeKeywords: this._activeKeywords,
     });
     this._latestScores = probs;
 
-    // Roll the sliding-window means.  We do this for ALL keywords (even
-    // inactive ones) so when a keyword is re-activated its window is
-    // already warm rather than starting from cold.
-    const meanScores = {};
-    for (const [name, p] of Object.entries(probs)) {
-      const w = this._scoreWindows[name];
-      if (!w) continue;
-      w.sum -= w.buf[w.head];
-      w.buf[w.head] = p;
-      w.sum += p;
-      w.head = (w.head + 1) % SCORE_WINDOW;
-      if (w.count < SCORE_WINDOW) w.count++;
-      meanScores[name] = w.sum / w.count;
-    }
-    this._latestMeans = meanScores;
-
-    // Two passes over the active keywords on their smoothed means:
-    //   1. Track the leader (highest mean) for display, even if no trigger
+    // Two passes over the active keywords on their current frame scores:
+    //   1. Track the leader (highest score) for display, even if no trigger
     //      fires - keeps the panel chart sensible during silence/idle.
     //   2. Run the borderline-confirm gate per keyword and pick the
     //      highest-scoring TRIGGERED one as the wake event.
@@ -281,26 +317,27 @@ export class OwwBackend {
     const now = (typeof performance !== 'undefined' && typeof performance.now === 'function')
       ? performance.now() : Date.now();
     let leaderName = null;
-    let leaderMean = 0;
+    let leaderScore = 0;
     let leaderCutoff = 0;
     let triggerName = null;
-    let triggerMean = 0;
+    let triggerScore = 0;
     let triggerCutoff = 0;
     let triggerType = null;
-    for (const [name, m] of Object.entries(meanScores)) {
+    for (const name in probs) {
+      const p = probs[name];
       if (!this._activeKeywords.has(name)) continue;
       const w = this._scoreWindows[name];
-      if (!w || w.count < SCORE_WINDOW) continue; // window not yet full
+      if (!w) continue;
       const cutoff = this._cutoffs[name] ?? DEFAULT_CUTOFF;
-      if (m > leaderMean) {
+      if (p > leaderScore) {
         leaderName = name;
-        leaderMean = m;
+        leaderScore = p;
         leaderCutoff = cutoff;
       }
-      const tt = this._gateBorderline(w, m, cutoff, name, now);
-      if (tt && m > triggerMean) {
+      const tt = this._gateBorderline(w, p, cutoff, name, now);
+      if (tt && p > triggerScore) {
         triggerName = name;
-        triggerMean = m;
+        triggerScore = p;
         triggerCutoff = cutoff;
         triggerType = tt;
       }
@@ -315,42 +352,37 @@ export class OwwBackend {
 
     return {
       detected,
-      score: triggerName ? triggerMean : leaderMean,
+      score: triggerName ? triggerScore : leaderScore,
       vadScore: 0,
       model: triggerName || leaderName,
       cutoff: triggerName ? triggerCutoff : leaderCutoff,
-      rms: this._latestRms,
+      rms,
       triggerType,
-      // Per-keyword sliding-window MEAN scores - matches what the
-      // trigger logic actually thresholds against, so the panel chart
-      // and the trigger gate stay in sync.  MWW's _perModelScores()
-      // returns means too; we were inadvertently emitting raw chunk
-      // scores here, which made the chart spike above cutoff while
-      // nothing fired (raw=0.7, mean=0.14 because surrounding chunks
-      // were near zero).  Raw probs are still on `_latestScores` if
-      // a future view wants them.
-      perModelScores: meanScores,
+      // Per-keyword raw OWW scores.  The worker proxy caches this for
+      // the tester/chart; for OWW this is the value that actually drives
+      // detection, unlike MWW where the model's own sliding mean is used.
+      perModelScores: probs,
     };
   }
 
   /**
-   * Per-keyword borderline-confirm gate, run on the smoothed window mean.
-   *   - mean <= cutoff               → no trigger, clear pending
-   *   - mean >= cutoff + margin      → 'immediate', clear pending
-   *   - cutoff < mean < cutoff+margin (borderline):
+   * Per-keyword borderline-confirm gate, run on the current frame score.
+   *   - score <= cutoff               → no trigger, clear pending
+   *   - score >= cutoff + margin      → 'immediate', clear pending
+   *   - cutoff < score < cutoff+margin (borderline):
    *       * if a fresh pending exists for this keyword → 'confirmed', clear
    *       * else park as pending, no trigger
    *   - borderline + stale pending   → drop pending, no trigger
    * Mirrors microWakeWord (micro-inference.js _shouldTriggerKeyword).
    */
-  _gateBorderline(w, mean, cutoff, name, now) {
-    if (mean <= cutoff) {
+  _gateBorderline(w, score, cutoff, name, now) {
+    if (score <= cutoff) {
       w.pendingConfirm = false;
       w.pendingConfirmAt = 0;
       w.pendingConfirmScore = 0;
       return null;
     }
-    if (mean >= cutoff + BORDERLINE_CONFIRM_MARGIN) {
+    if (score >= cutoff + BORDERLINE_CONFIRM_MARGIN) {
       w.pendingConfirm = false;
       w.pendingConfirmAt = 0;
       w.pendingConfirmScore = 0;
@@ -364,24 +396,24 @@ export class OwwBackend {
       w.pendingConfirmScore = 0;
       this._log?.log?.(
         'wake-word',
-        `OWW borderline confirm passed: ${name} first=${firstScore.toFixed(3)} second=${mean.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
+        `OWW borderline confirm passed: ${name} first=${firstScore.toFixed(3)} second=${score.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
       );
       return 'confirmed';
     }
     if (w.pendingConfirm) {
       this._log?.log?.(
         'wake-word',
-        `OWW borderline confirm expired: ${name} second=${mean.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
+        `OWW borderline confirm expired: ${name} second=${score.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
       );
     } else {
       this._log?.log?.(
         'wake-word',
-        `OWW borderline candidate parked: ${name} mean=${mean.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
+        `OWW borderline candidate parked: ${name} score=${score.toFixed(3)} cutoff=${cutoff.toFixed(3)}`,
       );
     }
     w.pendingConfirm = true;
     w.pendingConfirmAt = now;
-    w.pendingConfirmScore = mean;
+    w.pendingConfirmScore = score;
     return null;
   }
 
@@ -404,6 +436,7 @@ export class OwwBackend {
     if (!cfg?.name) return;
     if (typeof cfg.cutoff === 'number') this._cutoffs[cfg.name] = cfg.cutoff;
     this._activeKeywords.add(cfg.name);
+    if (!this._keywordNames.includes(cfg.name)) this._keywordNames.push(cfg.name);
     if (!this._scoreWindows[cfg.name]) {
       this._scoreWindows[cfg.name] = this._makeWindow();
     }
@@ -435,22 +468,21 @@ export class OwwBackend {
   }
 
   /**
-   * Sliding-window mean for `keywordName` (or the highest active mean
-   * if no name is supplied).  This is what the trigger logic thresholds
-   * against - exposing it to the panel tester so the chart shows the
-   * exact value used for detection rather than the noisier per-chunk
-   * raw score.
+   * Latest OWW frame score for `keywordName` (or the highest active score
+   * if no name is supplied).  For OWW this is what trigger logic compares
+   * against the cutoff; MWW's same-named method returns its window mean.
    */
   getLatestSmoothedProbability(keywordName) {
-    const means = this._latestMeans || {};
+    const scores = this._latestScores || {};
     if (keywordName === undefined) {
       let best = 0;
-      for (const [name, m] of Object.entries(means)) {
-        if (this._activeKeywords.has(name) && m > best) best = m;
+      for (const name in scores) {
+        const score = scores[name];
+        if (this._activeKeywords.has(name) && score > best) best = score;
       }
       return best;
     }
-    return means[keywordName] ?? 0;
+    return scores[keywordName] ?? 0;
   }
 
   // The MWW interface has updateEnergyThresholds + reset for sleep/wake
@@ -473,14 +505,10 @@ export class OwwBackend {
   }
   reset() {
     this._latestScores = {};
-    this._latestMeans = {};
     this._lastTriggerAt = 0;
-    for (const name of Object.keys(this._scoreWindows)) {
+    for (const name of this._keywordNames) {
       const w = this._scoreWindows[name];
-      w.buf.fill(0);
-      w.sum = 0;
-      w.head = 0;
-      w.count = 0;
+      if (!w) continue;
       w.pendingConfirm = false;
       w.pendingConfirmAt = 0;
       w.pendingConfirmScore = 0;
@@ -491,11 +519,12 @@ export class OwwBackend {
     // user audio actually arrives.
     this._sleeping = true;
     this._silentChunks = SLEEP_CHUNKS;
+    this._clearSleepBuffer();
     // Critical: clear the inference's internal audio history + 16-frame
     // feature buffer.  Without this the classifier sees stale embeddings
     // from around the previous wake-word detection and re-fires within
-    // ~240 ms (3 chunks = SCORE_WINDOW) of resume - the post-STT
-    // self-trigger loop the user hits when STT errors out.
+    // immediately after resume - the post-STT self-trigger loop the user
+    // hits when STT errors out.
     this._inference?.reset?.();
   }
 
@@ -509,6 +538,7 @@ export class OwwBackend {
     if (prev !== this._energyGateEnabled) {
       this._sleeping = false;
       this._silentChunks = 0;
+      this._clearSleepBuffer();
       this._log?.log?.(
         'wake-word',
         `OWW energy gate ${this._energyGateEnabled ? 'enabled' : 'disabled'}`,
