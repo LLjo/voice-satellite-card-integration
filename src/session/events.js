@@ -574,10 +574,8 @@ export function handlePipelineMessage(session, message) {
   const eventType = message.type;
   const eventData = message.data || {};
 
-  if (session.config.debug) {
-    const timestamp = message.timestamp ? message.timestamp.split('T')[1].split('.')[0] : '';
-    session.logger.log('event', `${timestamp} ${eventType} ${JSON.stringify(eventData).substring(0, 500)}`);
-  }
+  const timestamp = message.timestamp ? message.timestamp.split('T')[1].split('.')[0] : '';
+  session.logger.log('event', `${timestamp} ${eventType} ${JSON.stringify(eventData).substring(0, 500)}`);
 
   switch (eventType) {
     case 'run-start': session.pipeline.handleRunStart(eventData); break;

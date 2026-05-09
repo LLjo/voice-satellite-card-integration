@@ -11,6 +11,9 @@
  */
 
 const _STORAGE_KEY = 'vs-debug-override';
+const _BUFFER_KEY = '__vsLogBuffer';
+const _MAX_BUFFER_ENTRIES = 500;
+const _MAX_DATA_CHARS = 1800;
 
 function _checkUrlOverride() {
   try {
@@ -35,6 +38,7 @@ export class Logger {
     const override = _checkUrlOverride();
     this._override = override;
     this._debug = override ?? false;
+    this._buffer = _getBuffer();
   }
 
   set debug(val) {
@@ -47,6 +51,7 @@ export class Logger {
    * @param {*} [data] - Optional data to log
    */
   log(category, msg, data) {
+    this._record('log', category, msg, data);
     if (!this._debug) return;
     if (data !== undefined) {
       console.log(`[VS][${category}] ${msg}`, data);
@@ -61,10 +66,73 @@ export class Logger {
    * @param {*} [data]
    */
   error(category, msg, data) {
+    this._record('error', category, msg, data);
     if (data !== undefined) {
       console.error(`[VS][${category}] ${msg}`, data);
     } else {
       console.error(`[VS][${category}] ${msg}`);
     }
   }
+
+  getEntries() {
+    return this._buffer.slice();
+  }
+
+  exportText(limit = _MAX_BUFFER_ENTRIES) {
+    return exportLogBufferText(limit);
+  }
+
+  _record(level, category, msg, data) {
+    const entry = {
+      ts: Date.now(),
+      level,
+      category,
+      msg: String(msg ?? ''),
+    };
+    const serialized = _serializeData(data);
+    if (serialized) entry.data = serialized;
+    this._buffer.push(entry);
+    if (this._buffer.length > _MAX_BUFFER_ENTRIES) {
+      this._buffer.splice(0, this._buffer.length - _MAX_BUFFER_ENTRIES);
+    }
+  }
+}
+
+export function exportLogBufferText(limit = _MAX_BUFFER_ENTRIES) {
+  const entries = _getBuffer().slice(-limit);
+  if (!entries.length) return 'No Voice Satellite session logs captured yet.';
+  return entries.map((entry) => {
+    const ts = new Date(entry.ts).toISOString();
+    const suffix = entry.data ? ` ${entry.data}` : '';
+    return `${ts} [${entry.level}] [${entry.category}] ${entry.msg}${suffix}`;
+  }).join('\n');
+}
+
+function _getBuffer() {
+  return window[_BUFFER_KEY] || (window[_BUFFER_KEY] = []);
+}
+
+function _serializeData(data) {
+  if (data === undefined) return '';
+  if (data instanceof Error) return `${data.name}: ${data.message}`;
+  try {
+    if (typeof data === 'string') return data;
+    const seen = new WeakSet();
+    const json = JSON.stringify(data, (_key, value) => {
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+      }
+      if (typeof value === 'function') return '[Function]';
+      return value;
+    });
+    return _truncate(json || String(data));
+  } catch (_) {
+    return _truncate(String(data));
+  }
+}
+
+function _truncate(text) {
+  if (!text || text.length <= _MAX_DATA_CHARS) return text || '';
+  return `${text.slice(0, _MAX_DATA_CHARS)}...`;
 }

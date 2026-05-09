@@ -33,6 +33,7 @@ import { getMicroModelParams } from '../wake-word/micro-models.js';
 import { getSelectOptions, getSelectAttribute, getSelectState, getSwitchState } from '../shared/satellite-state.js';
 import { DiagnosticsManager } from '../diagnostics';
 import { buildMarkdownReport } from '../diagnostics/report.js';
+import { exportLogBufferText } from '../logger.js';
 
 const P = 'vsp';
 const CONFIG_KEY = 'vs-panel-config';
@@ -1323,6 +1324,7 @@ class VoiceSatellitePanel extends HTMLElement {
         <div class="${P}-diag-actions">
           <button type="button" class="${P}-diag-rerun">Run diagnostics</button>
           <button type="button" class="${P}-diag-copy" disabled>Copy report</button>
+          <button type="button" class="${P}-diag-copy ${P}-diag-copy-logs">Copy session logs</button>
         </div>
       </div>
 
@@ -1503,9 +1505,11 @@ class VoiceSatellitePanel extends HTMLElement {
 
     const rerun = card.querySelector(`.${P}-diag-rerun`);
     const copy = card.querySelector(`.${P}-diag-copy`);
+    const copyLogs = card.querySelector(`.${P}-diag-copy-logs`);
 
     rerun?.addEventListener('click', () => this._runDiagnostics());
     copy?.addEventListener('click', () => this._copyDiagnosticsReport());
+    copyLogs?.addEventListener('click', () => this._copySessionLogs());
     // No auto-run. The user triggers the first run with the button.
 
     // If the panel was navigated to with #diagnostics (e.g. via a toast
@@ -1701,17 +1705,48 @@ class VoiceSatellitePanel extends HTMLElement {
     if (!this._lastDiagnosticsReport) return;
     const md = buildMarkdownReport(this._lastDiagnosticsReport);
     const copy = this.querySelector(`.${P}-diag-copy`);
+    await this._copyText(md, copy, 'Copied');
+  }
+
+  async _copySessionLogs() {
+    const copy = this.querySelector(`.${P}-diag-copy-logs`);
+    const lines = [
+      '### Voice Satellite session logs',
+      '',
+      `- Generated: ${new Date().toISOString()}`,
+      `- URL: ${this._safeCurrentUrl()}`,
+      `- User agent: ${navigator.userAgent}`,
+      '',
+      '```text',
+      exportLogBufferText(),
+      '```',
+    ];
+    await this._copyText(lines.join('\n'), copy, 'Copied logs');
+  }
+
+  async _copyText(text, button, copiedLabel) {
     try {
-      await navigator.clipboard.writeText(md);
-      if (copy) {
-        const prev = copy.textContent;
-        copy.textContent = 'Copied';
-        setTimeout(() => { copy.textContent = prev; }, 1800);
+      await navigator.clipboard.writeText(text);
+      if (button) {
+        const prev = button.textContent;
+        button.textContent = copiedLabel;
+        setTimeout(() => { button.textContent = prev; }, 1800);
       }
     } catch (_) {
       // Fallback for environments without clipboard access: drop into a
       // selectable prompt so the user can still grab the text.
-      window.prompt('Copy the diagnostics report below:', md);
+      window.prompt('Copy the text below:', text);
+    }
+  }
+
+  _safeCurrentUrl() {
+    try {
+      const u = new URL(window.location.href);
+      u.search = '';
+      u.hash = '';
+      return u.toString();
+    } catch (_) {
+      return '(unknown)';
     }
   }
 

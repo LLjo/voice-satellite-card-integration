@@ -100,7 +100,7 @@ export class UIManager {
       '</button>' +
       '<div class="vs-chat-container"></div>' +
       '<div class="vs-image-panel"><div class="vs-panel-scroll"></div></div>' +
-      '<div class="vs-lightbox"><img class="vs-lightbox-img" /><iframe class="vs-lightbox-iframe" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>' +
+      '<div class="vs-lightbox"><img class="vs-lightbox-img" /><iframe class="vs-lightbox-iframe" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>' +
       '<div class="vs-rainbow-bar"></div>';
 
     document.body.appendChild(ui);
