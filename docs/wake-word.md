@@ -60,14 +60,14 @@ The browser continuously processes audio and runs lightweight keyword classifier
 
 ## Custom Wake Words
 
-Drop your `.tflite` file in the right folder, restart Home Assistant, and it appears in the "Wake word model" dropdown for the matching engine.
+Drop your model file in the right folder, restart Home Assistant, and it appears in the "Wake word model" dropdown for the matching engine.
 
-| Engine | Drop folder |
-|---|---|
-| microWakeWord | `config/voice_satellite/models/` |
-| openWakeWord  | `config/voice_satellite/models/openwakeword/` |
+| Engine | Model file | Drop folder |
+|---|---|---|
+| microWakeWord | `.tflite` | `config/voice_satellite/models/` |
+| openWakeWord  | `.onnx` classifier | `config/voice_satellite/models/openwakeword/` |
 
-If the model has a companion `.json` manifest, place it next to the `.tflite` with the same base filename. The filename (without `.tflite`) becomes the dropdown label - `hey_computer.tflite` appears as `hey_computer`.
+If the model has a companion `.json` manifest, place it next to the model file with the same base filename. The filename without its extension becomes the dropdown label - `hey_computer.tflite` for microWakeWord or `hey_computer.onnx` for openWakeWord appears as `hey_computer`. Only OWW classifier `.onnx` files go in the custom openWakeWord folder; the shared mel-spectrogram and embedding models are bundled.
 
 
 ## Configuration
@@ -103,7 +103,7 @@ Voice Satellite can listen for two wake words at the same time and route each to
 3. Pick a different model in **Wake word 2** - the select defaults to "Disabled".
 4. Pick the target pipeline for slot 2 in **Pipeline 2**. "Preferred" falls back to Pipeline 1, effectively making slot 2 inert.
 
-The runtime loads both TFLite models into a single shared feature extractor and runs both classifiers in parallel. Per-keyword quantization is applied at the model input, so the two models can have different training parameters without interfering.
+For microWakeWord, the runtime loads both TFLite models into a single shared feature extractor and runs both classifiers in parallel. Per-keyword quantization is applied at the model input, so the two models can have different training parameters without interfering. For openWakeWord, both ONNX classifiers share the same mel + embedding frontend, so the second wake word adds only a small classifier pass.
 
 ### Details and edge cases
 
@@ -112,7 +112,6 @@ The runtime loads both TFLite models into a single shared feature extractor and 
 - **Sensitivity is shared:** one sensitivity slider controls both slots. File an issue if per-slot sensitivity would help your setup.
 - **Chime is shared:** both wake words use the same wake chime.
 - **CPU cost:** running two models roughly doubles inference work for microWakeWord. openWakeWord shares mel + embedding across both slots, so the only added cost is the second classifier (<1 ms). Modern desktops, Galaxy Tab S8, and Fire HD 10 (2021+) handle MWW dual-slot without trouble. On older or low-powered devices, stick to one slot or enable the "Wake word noise gate" switch to pause inference during silence.
-- **No limit escape hatch:** the cap is two, matching Home Assistant Voice PE. There is no hidden setting for three or more.
 
 ## Disabled Mode
 
