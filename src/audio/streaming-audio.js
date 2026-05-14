@@ -182,11 +182,19 @@ export class StreamingAudio {
       }
       const resp = await fetch(url, { signal: abort.signal });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const reader = resp.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done || this._stopped) break;
-        this._processChunk(value);
+
+      // HA's tts_proxy serves WAV for some pipelines and MP3 for others.
+      // WAV gets the chunked streaming path (first sample audible while
+      // bytes still arriving). MP3 (and any decodeAudioData-compatible
+      // codec) gets the "fetch-then-decode" path — not as low-latency as
+      // streaming WAV but still skips the <audio> element's ~1-2s pre-roll
+      // because we hand the decoded buffer straight to BufferSourceNode.
+      const ctype = (resp.headers.get('content-type') || '').toLowerCase();
+      const isWav = ctype.includes('wav') || /\.wav(\?|$)/i.test(url);
+      if (isWav) {
+        await this._streamWav(resp);
+      } else {
+        await this._fetchAndDecode(resp);
       }
       this._fetchDone = true;
       this._scheduleOnEnded();
@@ -194,6 +202,44 @@ export class StreamingAudio {
       if (e?.name === 'AbortError') return;
       this._onerror?.(e);
     }
+  }
+
+  /** Streaming-WAV path: parse RIFF/WAVE header, schedule each PCM block as
+   *  bytes arrive. Lowest latency (~50-200ms to first sample). */
+  async _streamWav(resp) {
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || this._stopped) break;
+      this._processChunk(value);
+    }
+  }
+
+  /** Full-fetch + decodeAudioData path: read the entire response body, then
+   *  let the browser's codec decode it (MP3 / OGG / FLAC / ...). Schedule
+   *  the decoded buffer as a single chunk. Latency = network_fetch + decode,
+   *  typically 150-400ms for a short voice response. Still much better than
+   *  HTMLAudioElement.src= because we skip the pre-roll buffer policy. */
+  async _fetchAndDecode(resp) {
+    const buf = await resp.arrayBuffer();
+    if (this._stopped) return;
+    let decoded;
+    try {
+      decoded = await this._ctx.decodeAudioData(buf);
+    } catch (e) {
+      throw new Error(`StreamingAudio: decodeAudioData failed (${e?.message || e}) — codec unsupported?`);
+    }
+    if (this._stopped) return;
+
+    const src = this._ctx.createBufferSource();
+    src.buffer = decoded;
+    src.connect(this._gain);
+    const now = this._ctx.currentTime;
+    this._playHead = now + 0.02;
+    this._startedAt = this._playHead;
+    src.start(this._playHead);
+    this._playHead += decoded.duration;
+    this._totalDuration = decoded.duration;
   }
 
   _processChunk(value) {
