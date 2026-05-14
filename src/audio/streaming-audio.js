@@ -70,6 +70,7 @@ export class StreamingAudio {
   set volume(v) {
     this._volume = v;
     if (this._gain) this._gain.gain.value = v;
+    if (this._mseAudio) this._mseAudio.volume = v;
   }
 
   get src() { return this._src || ''; }
@@ -83,6 +84,8 @@ export class StreamingAudio {
   }
 
   get currentTime() {
+    // In MSE mode the internal <audio> tracks playback time accurately.
+    if (this._mseAudio) return this._mseAudio.currentTime || 0;
     if (this._startedAt === 0) return 0;
     return Math.max(0, this._ctx.currentTime - this._startedAt);
   }
@@ -94,7 +97,13 @@ export class StreamingAudio {
    * we return 0, which keeps consumers like `isFinite(duration) && duration > 0`
    * from doing the wrong thing prematurely.
    */
-  get duration() { return this._totalDuration; }
+  get duration() {
+    if (this._mseAudio) {
+      const d = this._mseAudio.duration;
+      return Number.isFinite(d) ? d : this._totalDuration;
+    }
+    return this._totalDuration;
+  }
 
   play() {
     // HTMLAudioElement.play() returns a Promise that resolves once playback
@@ -164,6 +173,17 @@ export class StreamingAudio {
       clearTimeout(this._endTimer);
       this._endTimer = null;
     }
+    if (this._mseAudio) {
+      try { this._mseAudio.pause(); } catch {}
+      try { this._mseAudio.removeAttribute('src'); this._mseAudio.load(); } catch {}
+      this._mseAudio.onended = null;
+      this._mseAudio.onerror = null;
+      this._mseAudio = null;
+    }
+    if (this._mseObjUrl) {
+      try { URL.revokeObjectURL(this._mseObjUrl); } catch {}
+      this._mseObjUrl = null;
+    }
     this._playHead = -1;
     this._startedAt = 0;
     this._totalDuration = 0;
@@ -194,7 +214,7 @@ export class StreamingAudio {
       if (isWav) {
         await this._streamWav(resp);
       } else {
-        await this._fetchAndDecode(resp);
+        await this._streamViaMse(resp, ctype);
       }
       this._fetchDone = true;
       this._scheduleOnEnded();
@@ -215,12 +235,103 @@ export class StreamingAudio {
     }
   }
 
-  /** Full-fetch + decodeAudioData path: read the entire response body, then
-   *  let the browser's codec decode it (MP3 / OGG / FLAC / ...). Schedule
-   *  the decoded buffer as a single chunk. Latency = network_fetch + decode,
-   *  typically 150-400ms for a short voice response. Still much better than
-   *  HTMLAudioElement.src= because we skip the pre-roll buffer policy. */
-  async _fetchAndDecode(resp) {
+  /** MSE-based streaming MP3 (or other browser-decoded codec) path.
+   *  Feeds bytes to the browser decoder incrementally via SourceBuffer,
+   *  so playback can begin within ~200-500ms instead of waiting for the
+   *  full body. Uses an internal HTMLAudioElement (the only consumer of
+   *  MediaSource); we proxy our public API to it. */
+  async _streamViaMse(resp, contentType) {
+    // Normalize the codec MIME — HA serves Content-Type "audio/mpeg" but
+    // some servers say "audio/mp3" (not officially registered).
+    let mime = (contentType || '').split(';')[0].trim().toLowerCase();
+    if (mime === 'audio/mp3') mime = 'audio/mpeg';
+    if (!mime) mime = 'audio/mpeg';  // best guess if header missing
+
+    if (typeof MediaSource === 'undefined' || !MediaSource.isTypeSupported(mime)) {
+      // No MSE support OR unsupported codec — fall back to full-fetch decode.
+      // This preserves correctness at the cost of waiting for all bytes.
+      return this._fetchAndDecodeFallback(resp);
+    }
+
+    const audio = new Audio();
+    audio.volume = this._volume;
+    audio.onended = () => this._onended?.();
+    audio.onerror = (e) => {
+      const err = audio.error;
+      this._onerror?.(err || new Error(`MSE audio error: ${e}`));
+    };
+    this._mseAudio = audio;
+
+    const mediaSource = new MediaSource();
+    const objUrl = URL.createObjectURL(mediaSource);
+    audio.src = objUrl;
+    this._mseObjUrl = objUrl;
+
+    // Wait for MediaSource to open before we can add a SourceBuffer.
+    await new Promise((resolve, reject) => {
+      const onOpen = () => { mediaSource.removeEventListener('error', onErr); resolve(); };
+      const onErr = (e) => { mediaSource.removeEventListener('sourceopen', onOpen); reject(e); };
+      mediaSource.addEventListener('sourceopen', onOpen, { once: true });
+      mediaSource.addEventListener('error', onErr, { once: true });
+    });
+    if (this._stopped) return;
+
+    const sb = mediaSource.addSourceBuffer(mime);
+    sb.mode = 'sequence';  // simpler: chunks are appended in arrival order
+
+    // SourceBuffer only accepts one appendBuffer at a time — anything that
+    // arrives while a previous append is still updating must be queued.
+    const queue = [];
+    let ended = false;
+    sb.addEventListener('updateend', () => {
+      if (queue.length > 0 && !sb.updating && !ended) {
+        sb.appendBuffer(queue.shift());
+      }
+    });
+
+    const reader = resp.body.getReader();
+    let firstAppend = true;
+    let playKicked = false;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || this._stopped) break;
+        if (sb.updating || queue.length > 0) {
+          queue.push(value);
+        } else {
+          sb.appendBuffer(value);
+        }
+        if (firstAppend) {
+          firstAppend = false;
+          this._startedAt = this._ctx.currentTime;
+        }
+        // Kick off playback after the FIRST chunk lands. The browser will
+        // pause itself if it underruns — that's fine.
+        if (!playKicked) {
+          playKicked = true;
+          // Don't await: play() can resolve after audio actually starts,
+          // which itself depends on more bytes being decoded.
+          audio.play().catch((e) => this._onerror?.(e));
+        }
+      }
+      // Drain the queue, then signal end-of-stream.
+      while ((queue.length > 0 || sb.updating) && !this._stopped) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      ended = true;
+      if (!this._stopped && mediaSource.readyState === 'open') {
+        try { mediaSource.endOfStream(); } catch {}
+      }
+    } catch (e) {
+      if (e?.name === 'AbortError') return;
+      throw e;
+    }
+  }
+
+  /** Last-resort path when MSE isn't available or doesn't support the codec.
+   *  Wait for all bytes, decodeAudioData, schedule as one buffer. Slower
+   *  than MSE but at least works on older browsers and exotic codecs. */
+  async _fetchAndDecodeFallback(resp) {
     const buf = await resp.arrayBuffer();
     if (this._stopped) return;
     let decoded;
@@ -335,6 +446,9 @@ export class StreamingAudio {
 
   _scheduleOnEnded() {
     if (this._endTimer) clearTimeout(this._endTimer);
+    // In MSE mode the internal <audio> element fires onended itself via the
+    // 'ended' event; nothing to schedule.
+    if (this._mseAudio) return;
     if (!this._fetchDone) return;
     const remaining = Math.max(0, this._playHead - this._ctx.currentTime);
     this._endTimer = setTimeout(() => {
