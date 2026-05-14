@@ -111,27 +111,38 @@ export class AnalyserManager {
       if (!this._audioAnalyser) {
         this._audioAnalyser = this._createAnalyser(audioContext);
       }
-      // createMediaElementSource can only be called once per element for
-      // the life of the document. Cache per-element source nodes so TTS,
-      // notifications, and later reattachments all reuse the original node.
-      if (this._mediaSourceEl !== audioEl) {
-        const cached = this._mediaSourceCache.get(audioEl);
-        if (cached) {
-          if (cached.context !== audioContext) {
-            this._log.log('analyser', 'Skipping audio analyser attach - media element is bound to an old AudioContext');
-            return;
+
+      // StreamingAudio (Web Audio API streaming WAV player) can't use
+      // createMediaElementSource — it isn't an HTMLMediaElement. Its internal
+      // gain node is what we need to tap. Hand it the analyser so it rewires
+      // gain -> analyser instead of gain -> destination; the analyser then
+      // connects to destination below, same as the HTMLMediaElement path.
+      if (audioEl._isStreamingAudio && typeof audioEl.routeToAnalyser === 'function') {
+        audioEl.routeToAnalyser(this._audioAnalyser);
+        this._streamingEl = audioEl;
+      } else {
+        // createMediaElementSource can only be called once per element for
+        // the life of the document. Cache per-element source nodes so TTS,
+        // notifications, and later reattachments all reuse the original node.
+        if (this._mediaSourceEl !== audioEl) {
+          const cached = this._mediaSourceCache.get(audioEl);
+          if (cached) {
+            if (cached.context !== audioContext) {
+              this._log.log('analyser', 'Skipping audio analyser attach - media element is bound to an old AudioContext');
+              return;
+            }
+            this._mediaSourceNode = cached.node;
+          } else {
+            this._mediaSourceNode = audioContext.createMediaElementSource(audioEl);
+            this._mediaSourceCache.set(audioEl, {
+              node: this._mediaSourceNode,
+              context: audioContext,
+            });
           }
-          this._mediaSourceNode = cached.node;
-        } else {
-          this._mediaSourceNode = audioContext.createMediaElementSource(audioEl);
-          this._mediaSourceCache.set(audioEl, {
-            node: this._mediaSourceNode,
-            context: audioContext,
-          });
+          this._mediaSourceEl = audioEl;
         }
-        this._mediaSourceEl = audioEl;
+        this._mediaSourceNode.connect(this._audioAnalyser);
       }
-      this._mediaSourceNode.connect(this._audioAnalyser);
       this._audioAnalyser.connect(audioContext.destination);
 
       // Switch reactive bar to read from audio analyser during playback
@@ -255,6 +266,11 @@ export class AnalyserManager {
       try { this._mediaSourceNode.disconnect(); } catch {}
       // Don't null _mediaSourceNode - it's reusable for the same element
       this._log.log('analyser', 'Audio -> audioAnalyser disconnected');
+    }
+    if (this._streamingEl) {
+      try { this._streamingEl.restoreDefaultRouting(); } catch {}
+      this._streamingEl = null;
+      this._log.log('analyser', 'StreamingAudio routing restored to destination');
     }
     if (this._audioAnalyser) {
       try { this._audioAnalyser.disconnect(); } catch {}

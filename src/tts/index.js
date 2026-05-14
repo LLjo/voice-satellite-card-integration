@@ -7,6 +7,7 @@
 
 import { playChime as playChimeSound, CHIME_WAKE, CHIME_ERROR, CHIME_DONE } from '../audio/chime.js';
 import { buildMediaUrl } from '../audio/media-playback.js';
+import { StreamingAudio, shouldStreamUrl } from '../audio/streaming-audio.js';
 import { playRemote, stopRemote } from './comms.js';
 import { Timing } from '../constants.js';
 
@@ -29,10 +30,13 @@ export class TtsManager {
     this._card = card;
     this._log = card.logger;
 
-    // Single persistent Audio element - reused across all TTS plays.
-    // Setting src on an existing element auto-cancels the previous fetch,
-    // preventing orphaned HTTP connections from exhausting the browser pool.
+    // Audio element used for the current play. For HA tts_proxy URLs we
+    // swap in a StreamingAudio wrapper that decodes the chunked WAV via
+    // Web Audio API (sub-200ms to first sample, vs ~1-2s for <audio>'s
+    // pre-roll). For non-TTS URLs (chimes, media-source://) we stay on
+    // the native <audio> element. _ensureAudioEl(url) decides per-call.
     this._audioEl = new Audio();
+    this._audioElIsStreaming = false;
     this._playing = false;
     this._endTimer = null;
     this._streamingUrl = null;
@@ -133,9 +137,10 @@ export class TtsManager {
       this._onComplete();
     }, Timing.PLAYBACK_WATCHDOG);
 
-    // Reuse the persistent Audio element. Setting src auto-cancels any
-    // previous in-flight fetch, so orphaned connections are impossible.
-    const audio = this._audioEl;
+    // Pick the right player for this URL: StreamingAudio for HA's chunked
+    // tts_proxy WAV stream (low-latency Web Audio API path), HTMLAudioElement
+    // for everything else.
+    const audio = this._ensureAudioEl(url);
     audio.volume = this._card.mediaPlayer.volume;
 
     // Guard against double error/completion callbacks
@@ -387,14 +392,50 @@ export class TtsManager {
       this._onComplete();
     }
   }
+  /** Pick (and lazily build) the right audio player for this URL. HA's
+   *  tts_proxy URLs go through StreamingAudio for sub-200ms first-sample
+   *  latency; everything else (chimes, announcements, media-source://) stays
+   *  on the native HTMLAudioElement path. We rebuild the player when the
+   *  URL kind changes so we never leave stale state across plays. */
+  _ensureAudioEl(url) {
+    const wantStreaming = shouldStreamUrl(url);
+    if (wantStreaming === this._audioElIsStreaming && this._audioEl) {
+      return this._audioEl;
+    }
+    // Type change — tear down the old one cleanly first.
+    if (this._audioEl) {
+      try {
+        this._audioEl.onended = null;
+        this._audioEl.onerror = null;
+        this._audioEl.pause();
+        this._audioEl.removeAttribute?.('src');
+        this._audioEl.load?.();
+        this._audioEl.destroy?.();           // StreamingAudio only
+      } catch {}
+    }
+    if (wantStreaming) {
+      // Share the card's AudioContext if available so the reactive-bar
+      // analyser can tap our output (createMediaElementSource won't accept
+      // a non-HTMLMediaElement, but routeToAnalyser() works on our shared
+      // gain node — see analyser.js).
+      const sharedCtx = this._card.audio?.audioContext || null;
+      this._audioEl = new StreamingAudio(sharedCtx);
+    } else {
+      this._audioEl = new Audio();
+    }
+    this._audioElIsStreaming = wantStreaming;
+    return this._audioEl;
+  }
+
   /** Reset the persistent Audio element, closing any open HTTP connection. */
   _releaseAudio() {
     const a = this._audioEl;
+    if (!a) return;
     a.onended = null;
     a.onerror = null;
     a.pause();
-    a.removeAttribute('src');
-    a.load();
+    a.removeAttribute?.('src');
+    a.load?.();
   }
 
   _clearWatchdog() {
