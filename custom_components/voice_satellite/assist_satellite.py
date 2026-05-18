@@ -78,6 +78,16 @@ class VoiceSatelliteEntity(AssistSatelliteEntity):
         | AssistSatelliteEntityFeature.START_CONVERSATION
     )
 
+    @property
+    def tts_options(self) -> dict[str, Any] | None:
+        # Force WAV: HA's tts_proxy default is MP3, and its on-demand MP3
+        # transcoder buffers ~1.5s before flushing the first byte. WAV lets
+        # wyoming's PCM chunks pass through with negligible processing, so
+        # the browser's StreamingAudio decoder can start playback within
+        # ~100ms of the first byte instead of waiting for a full encoded file.
+        base = super().tts_options or {}
+        return {**base, "preferred_format": "wav"}
+
     def __init__(self, entry: ConfigEntry) -> None:
         """Initialize the satellite entity."""
         self._entry = entry

@@ -10,6 +10,23 @@ import { CHIME_WAKE, getChimeDuration } from '../audio/chime.js';
 import { onTTSComplete } from '../session/events.js';
 import { humanizeToolName } from '../shared/tool-name.js';
 
+let __ttsTimingT0 = 0;
+let __ttsTimingFirstDelta = false;
+function __ttsTimingStamp() {
+  const d = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+       + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+function ttsTimingLog(mgr, label, extra = '') {
+  if (!__ttsTimingT0) return;
+  const dt = Math.round(performance.now() - __ttsTimingT0);
+  const line = `${__ttsTimingStamp()} [tts-timing] +${dt}ms ${label}${extra ? ' ' + extra : ''}`;
+  // eslint-disable-next-line no-console
+  console.log(line);
+  mgr.log.log('tts-timing', line);
+}
+
 /**
  * Run-start: binaryHandlerId is already set from the init event.
  * Server-side run-start doesn't include runner_data - only pipeline,
@@ -38,6 +55,11 @@ export function handleRunStart(mgr, eventData) {
 
   // Store streaming TTS URL (tts_output is at the top level)
   mgr.card.tts.storeStreamingUrl(eventData);
+
+  __ttsTimingT0 = performance.now();
+  __ttsTimingFirstDelta = false;
+  window.__ttsTimingT0 = __ttsTimingT0;
+  ttsTimingLog(mgr, 'run-start', `hasStreamingUrl=${!!mgr.card.tts.streamingUrl}`);
 
   // Reset per-turn state for the chat event payload
   mgr.currentSttText = '';
@@ -195,10 +217,16 @@ export function handleSttEnd(mgr, eventData) {
 export function handleIntentProgress(mgr, eventData) {
   const { tts } = mgr.card;
 
+  if (eventData.tts_start_streaming) {
+    ttsTimingLog(mgr, 'tts_start_streaming flag from HA',
+      `streamingUrlReady=${!!tts.streamingUrl}, ttsIsPlaying=${tts.isPlaying}, videoPlaying=${!!mgr.card._videoPlaying}`);
+  }
+
   if (eventData.tts_start_streaming && tts.streamingUrl && !tts.isPlaying && !mgr.card._videoPlaying) {
     mgr.log.log('tts', 'Streaming TTS started - playing early');
     mgr.card.setState(State.TTS);
     tts.play(tts.streamingUrl);
+    ttsTimingLog(mgr, 'called tts.play(streamingUrl)');
     tts.streamingUrl = null;
   }
 
@@ -257,6 +285,11 @@ export function handleIntentProgress(mgr, eventData) {
 
   const chunk = eventData.chat_log_delta.content;
   if (typeof chunk !== 'string') return;
+
+  if (!__ttsTimingFirstDelta && chunk.length > 0) {
+    __ttsTimingFirstDelta = true;
+    ttsTimingLog(mgr, 'first LLM delta', JSON.stringify(chunk.slice(0, 40)));
+  }
 
   const { chat } = mgr.card;
   chat.streamedResponse = (chat.streamedResponse || '') + chunk;
@@ -417,6 +450,9 @@ export function handleTtsEnd(mgr, eventData) {
   }
 
   const { tts } = mgr.card;
+
+  ttsTimingLog(mgr, 'tts-end event from HA',
+    `hasUrl=${!!eventData.tts_output?.url}, ttsAlreadyPlaying=${tts.isPlaying}`);
 
   // Store canonical tts-end URL for duration event correlation
   const ttsUrl = eventData.tts_output?.url || eventData.tts_output?.url_path || null;

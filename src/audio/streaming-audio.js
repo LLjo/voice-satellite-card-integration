@@ -17,6 +17,20 @@
  * `analyser.attachAudio()` can detect us and tap our internal GainNode
  * directly (createMediaElementSource doesn't accept non-HTMLMediaElements).
  */
+function _ttsTimingStamp() {
+  const d = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+       + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+}
+function _ttsTimingLog(label, extra = '') {
+  const t0 = window.__ttsTimingT0;
+  if (!t0) return;
+  const dt = Math.round(performance.now() - t0);
+  // eslint-disable-next-line no-console
+  console.log(`${_ttsTimingStamp()} [tts-timing] +${dt}ms streaming-audio: ${label}${extra ? ' ' + extra : ''}`);
+}
+
 export class StreamingAudio {
   /**
    * @param {AudioContext} [audioContext] — Shared context (preferred, lets
@@ -197,6 +211,7 @@ export class StreamingAudio {
     this._abort = new AbortController();
     const abort = this._abort;
     try {
+      _ttsTimingLog('fetch start', `url=${url}`);
       if (this._ctx.state === 'suspended') {
         try { await this._ctx.resume(); } catch {}
       }
@@ -211,6 +226,7 @@ export class StreamingAudio {
       // because we hand the decoded buffer straight to BufferSourceNode.
       const ctype = (resp.headers.get('content-type') || '').toLowerCase();
       const isWav = ctype.includes('wav') || /\.wav(\?|$)/i.test(url);
+      _ttsTimingLog('fetch response headers', `content-type=${ctype || '(none)'}, path=${isWav ? 'WAV-streaming' : 'MSE'}`);
       if (isWav) {
         await this._streamWav(resp);
       } else {
@@ -228,9 +244,14 @@ export class StreamingAudio {
    *  bytes arrive. Lowest latency (~50-200ms to first sample). */
   async _streamWav(resp) {
     const reader = resp.body.getReader();
+    let firstByteLogged = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done || this._stopped) break;
+      if (!firstByteLogged && value && value.length > 0) {
+        firstByteLogged = true;
+        _ttsTimingLog('WAV first byte received', `bytes=${value.length}`);
+      }
       this._processChunk(value);
     }
   }
@@ -260,6 +281,7 @@ export class StreamingAudio {
       const err = audio.error;
       this._onerror?.(err || new Error(`MSE audio error: ${e}`));
     };
+    audio.onplaying = () => _ttsTimingLog('MSE audio.onplaying (sound out)');
     this._mseAudio = audio;
 
     const mediaSource = new MediaSource();
@@ -304,11 +326,13 @@ export class StreamingAudio {
         if (firstAppend) {
           firstAppend = false;
           this._startedAt = this._ctx.currentTime;
+          _ttsTimingLog('MSE first byte appended', `bytes=${value.length}`);
         }
         // Kick off playback after the FIRST chunk lands. The browser will
         // pause itself if it underruns — that's fine.
         if (!playKicked) {
           playKicked = true;
+          _ttsTimingLog('MSE audio.play() called');
           // Don't await: play() can resolve after audio actually starts,
           // which itself depends on more bytes being decoded.
           audio.play().catch((e) => this._onerror?.(e));
@@ -435,6 +459,8 @@ export class StreamingAudio {
       // time to pick it up. 20ms is far below perceptible.
       this._playHead = now + 0.02;
       this._startedAt = this._playHead;
+      _ttsTimingLog('WAV first PCM scheduled (sound out imminent)',
+        `frames=${frames}, sampleRate=${this._sampleRate}`);
     } else if (this._playHead < now) {
       // Underrun: we fell behind real time. Catch up.
       this._playHead = now;
