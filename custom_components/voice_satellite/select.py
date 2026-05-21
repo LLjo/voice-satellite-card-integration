@@ -62,6 +62,7 @@ async def async_setup_entry(
         VoiceSatelliteVadSensitivitySelect(hass, entry),
         VoiceSatelliteTTSOutputSelect(hass, entry),
         VoiceSatelliteSessionDurationSelect(hass, entry),
+        VoiceSatelliteConversationModeSelect(hass, entry),
         detection_select,
         VoiceSatelliteWakeWordModelSelect(hass, entry, mww_models, oww_models, detection_select),
         wake_word_2_select,
@@ -310,6 +311,54 @@ class VoiceSatelliteSessionDurationSelect(SelectEntity, RestoreEntity):
     async def async_select_option(self, option: str) -> None:
         """Handle option selection."""
         if option in SESSION_DURATION_OPTIONS:
+            self._selected_option = option
+            self.async_write_ha_state()
+
+
+CONVERSATION_MODE_DEFAULT = "llm_decides"
+CONVERSATION_MODE_OPTIONS = ["always", "llm_decides", "off"]
+
+
+class VoiceSatelliteConversationModeSelect(SelectEntity, RestoreEntity):
+    """Controls when the satellite re-opens the mic after a TTS reply.
+
+    - always: re-arm the mic after every assistant turn (HA STT silence
+      timeout closes the conversation if the user stays quiet)
+    - llm_decides: defer to HA's continue_conversation flag, which is
+      true iff the assistant's last sentence ends with "?", ";" or "？"
+    - off: never re-arm; a wake word is required for every turn
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_has_entity_name = True
+    _attr_translation_key = "conversation_mode"
+    _attr_icon = "mdi:forum-outline"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_conversation_mode"
+        self._selected_option: str = CONVERSATION_MODE_DEFAULT
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+
+    @property
+    def options(self) -> list[str]:
+        return list(CONVERSATION_MODE_OPTIONS)
+
+    @property
+    def current_option(self) -> str | None:
+        return self._selected_option
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state in CONVERSATION_MODE_OPTIONS:
+            self._selected_option = last_state.state
+
+    async def async_select_option(self, option: str) -> None:
+        if option in CONVERSATION_MODE_OPTIONS:
             self._selected_option = option
             self.async_write_ha_state()
 

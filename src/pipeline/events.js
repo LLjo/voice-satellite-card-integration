@@ -5,7 +5,7 @@
  */
 
 import { State, INTERACTING_STATES, EXPECTED_ERRORS, BlurReason, Timing } from '../constants.js';
-import { getSwitchState, getSatelliteAttr } from '../shared/satellite-state.js';
+import { getSwitchState, getSatelliteAttr, getSelectState } from '../shared/satellite-state.js';
 import { CHIME_WAKE, getChimeDuration } from '../audio/chime.js';
 import { onTTSComplete } from '../session/events.js';
 import { humanizeToolName } from '../shared/tool-name.js';
@@ -61,6 +61,13 @@ export function handleRunStart(mgr, eventData) {
   window.__ttsTimingT0 = __ttsTimingT0;
   ttsTimingLog(mgr, 'run-start', `hasStreamingUrl=${!!mgr.card.tts.streamingUrl}`);
 
+  // Capture conversation_id early so a stop-word barge-in mid-stream
+  // can re-arm STT with the same context (intent-end may not have fired
+  // yet when the user interrupts).
+  if (eventData?.conversation_id) {
+    mgr.currentConversationId = eventData.conversation_id;
+  }
+
   // Reset per-turn state for the chat event payload
   mgr.currentSttText = '';
   mgr.currentToolCalls.length = 0;
@@ -70,6 +77,11 @@ export function handleRunStart(mgr, eventData) {
   if (mgr.continueMode) {
     mgr.continueMode = false;
     mgr.card.setState(State.STT);
+    // Arm the silence timer the moment the mic actually opens for the
+    // follow-up. Arming earlier (in restartContinue, pre-subscription)
+    // burns 300-800ms of the budget on pipeline setup the user can't
+    // possibly use.
+    mgr._armContinueIdleTimer();
     mgr.log.log('pipeline', `Running (continue conversation) - binary handler ID: ${mgr.binaryHandlerId}`);
     mgr.log.log('pipeline', 'Listening for speech...');
     return;
@@ -391,10 +403,31 @@ export function handleIntentEnd(mgr, eventData) {
 
   mgr.shouldContinue = false;
   mgr.continueConversationId = null;
-  if (eventData?.intent_output?.continue_conversation === true) {
+  const llmAsked = eventData?.intent_output?.continue_conversation === true;
+  const mode = getSelectState(
+    mgr.card.hass,
+    mgr.card.config?.satellite_entity,
+    'conversation_mode',
+    'llm_decides',
+  );
+  let shouldContinue = false;
+  if (mode === 'always') shouldContinue = true;
+  else if (mode === 'off') shouldContinue = false;
+  else shouldContinue = llmAsked;  // llm_decides (default)
+
+  // Refresh the running conversation id whenever the intent layer hands
+  // one out — the stop-word barge-in path reads this even when
+  // shouldContinue is false (e.g. mode=off vs. user wanting to interrupt
+  // anyway). It's harmless if the value is the same as run-start's.
+  if (eventData?.intent_output?.conversation_id) {
+    mgr.currentConversationId = eventData.intent_output.conversation_id;
+  }
+
+  if (shouldContinue) {
     mgr.shouldContinue = true;
-    mgr.continueConversationId = eventData.intent_output.conversation_id || null;
-    mgr.log.log('pipeline', `Continue conversation requested - id: ${mgr.continueConversationId}`);
+    mgr.continueConversationId = eventData?.intent_output?.conversation_id || null;
+    mgr.log.log('pipeline',
+      `Continue conversation (mode=${mode}, llmAsked=${llmAsked}, id=${mgr.continueConversationId})`);
   }
 
   // Fire chat event with the full turn payload, then clear per-turn state
@@ -458,12 +491,19 @@ export function handleTtsEnd(mgr, eventData) {
   const ttsUrl = eventData.tts_output?.url || eventData.tts_output?.url_path || null;
   if (ttsUrl) tts.ttsUrl = ttsUrl;
 
+  // Continue-conversation path: onTTSComplete → restartContinue owns the
+  // pipeline restart once local playback drains. Calling mgr.restart(0) here
+  // races against TTS drain — for short replies the wake-word restart wins,
+  // restartContinue sees _isRestarting and bails, and the satellite ends up
+  // in wake-word mode instead of continue/STT.
+  const willContinue = mgr.shouldContinue;
+
   if (tts.isPlaying) {
     // Store tts-end URL as retry fallback for the in-progress streaming playback
     const endUrl = eventData.tts_output?.url || eventData.tts_output?.url_path || null;
     if (endUrl) tts.storeTtsEndUrl(endUrl);
     mgr.log.log('tts', 'Streaming TTS already playing - skipping duplicate playback');
-    mgr.restart(0);
+    if (!willContinue) mgr.restart(0);
     return;
   }
 
@@ -479,7 +519,7 @@ export function handleTtsEnd(mgr, eventData) {
     }
   }
 
-  mgr.restart(0);
+  if (!willContinue) mgr.restart(0);
 }
 
 /** @param {import('./index.js').PipelineManager} mgr */

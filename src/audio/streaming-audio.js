@@ -69,6 +69,11 @@ export class StreamingAudio {
     this._endTimer = null;
     this._fetchDone = false;
 
+    // Tracks BufferSourceNodes scheduled into the audio context via
+    // source.start(playHead). Web Audio scheduled nodes play even after
+    // we abort the fetch — we need to .stop(0) them explicitly on pause.
+    this._scheduledSources = [];
+
     this._volume = 1;
   }
 
@@ -204,6 +209,16 @@ export class StreamingAudio {
     this._headerParsed = false;
     this._leftover = new Uint8Array(0);
     this._fetchDone = false;
+
+    // Cancel any PCM frames already scheduled into the audio context.
+    // Without this, calling stop()/pause() on a WAV-streaming source leaves
+    // the future-scheduled BufferSourceNodes to play out (was 100ms-2s of
+    // ghost audio after the user said "stop").
+    for (const src of this._scheduledSources) {
+      try { src.stop(0); } catch {}
+      try { src.disconnect(); } catch {}
+    }
+    this._scheduledSources.length = 0;
   }
 
   async _startStream(url) {
@@ -369,6 +384,7 @@ export class StreamingAudio {
     const src = this._ctx.createBufferSource();
     src.buffer = decoded;
     src.connect(this._gain);
+    this._scheduledSources.push(src);
     const now = this._ctx.currentTime;
     this._playHead = now + 0.02;
     this._startedAt = this._playHead;
@@ -452,6 +468,7 @@ export class StreamingAudio {
     const source = this._ctx.createBufferSource();
     source.buffer = buf;
     source.connect(this._gain);
+    this._scheduledSources.push(source);
 
     const now = this._ctx.currentTime;
     if (this._playHead < 0) {

@@ -10,7 +10,7 @@
  */
 
 import { State, INTERACTING_STATES, BlurReason, Timing } from '../constants.js';
-import { getSwitchState, getSelectState } from '../shared/satellite-state.js';
+import { getSwitchState, getSelectState, getNumberState } from '../shared/satellite-state.js';
 import { subscribePipelineRun, setupReconnectListener } from './comms.js';
 import {
   handleRunStart,
@@ -44,6 +44,14 @@ export class PipelineManager {
     this._continueConversationId = null;
     this._shouldContinue = false;
     this._continueMode = false;
+    // Closes the follow-up turn after N seconds of silence so the mic
+    // doesn't stay open forever in "always" conversation mode. Cancelled
+    // on stt-end (user spoke) or any state-clearing path.
+    this._continueIdleTimer = null;
+    // Latest conversation_id observed from run-start / intent-end. Used
+    // by the stop-word barge-in path to re-arm STT with the same context
+    // even when the user interrupts mid-stream (before intent-end fires).
+    this._currentConversationId = null;
     // Wake word slot (1 or 2) of the current conversation chain. Set when
     // a wake word fires with a slot, read by restartContinue() so follow-
     // up turns route through the same Pipeline N as the original turn.
@@ -97,6 +105,8 @@ export class PipelineManager {
   set shouldContinue(val) { this._shouldContinue = val; }
   get continueConversationId() { return this._continueConversationId; }
   set continueConversationId(val) { this._continueConversationId = val; }
+  get currentConversationId() { return this._currentConversationId; }
+  set currentConversationId(val) { this._currentConversationId = val; }
   get activeWakeWordSlot() { return this._activeWakeWordSlot; }
   get continueMode() { return this._continueMode; }
   set continueMode(val) { this._continueMode = val; }
@@ -445,6 +455,7 @@ export class PipelineManager {
       }
       this.start(startOpts).catch((e) => {
         const msg = e?.message || JSON.stringify(e);
+        this._clearContinueIdleTimer();
         this._log.error('pipeline', `Continue conversation failed: ${msg}`);
         // Both start_conversation and ask_question drive STT via this
         // path, as does a follow-up turn after a continue-conversation
@@ -499,7 +510,12 @@ export class PipelineManager {
     handleWakeWordEnd(this, data);
   }
 
-  handleSttEnd(data) { handleSttEnd(this, data); }
+  handleSttEnd(data) {
+    // User finished speaking — STT is now processing. Stop the silence
+    // timer so we don't kill the conversation mid-thought.
+    this._clearContinueIdleTimer();
+    handleSttEnd(this, data);
+  }
   handleIntentProgress(data) { handleIntentProgress(this, data); }
   handleIntentEnd(data) { handleIntentEnd(this, data); }
   handleTtsEnd(data) { handleTtsEnd(this, data); }
@@ -531,6 +547,44 @@ export class PipelineManager {
   clearContinueState() {
     this._shouldContinue = false;
     this._continueConversationId = null;
+    this._clearContinueIdleTimer();
+  }
+
+  _armContinueIdleTimer() {
+    this._clearContinueIdleTimer();
+    const secs = Number(getNumberState(
+      this._card.hass,
+      this._card.config?.satellite_entity,
+      'continue_timeout',
+      30,
+    )) || 30;
+    this._log.log('pipeline', `Continue idle timer armed (${secs}s)`);
+    this._continueIdleTimer = setTimeout(() => {
+      this._continueIdleTimer = null;
+      this._log.log('pipeline', `Continue idle timeout (${secs}s) elapsed — ending conversation`);
+      // Stop the active subscription, then tear down the conversation
+      // visuals the same way the stop-word handler does. Without this UI
+      // pass, the chat + blur would persist on screen indefinitely even
+      // though no pipeline is running.
+      this.clearContinueState();
+      this.stop().catch(() => {});
+      try { this._card.tts.stop(); } catch (_) { /* tts may already be idle */ }
+      this._card.askQuestion?.cancel?.();
+      this._card.setState(State.IDLE);
+      this._card.chat.clear();
+      this._card.ui.hideBlurOverlay(BlurReason.PIPELINE);
+      this._card.ui.updateForState(State.IDLE, this._serviceUnavailable, false);
+      this._card.mediaPlayer?.resumeAfterInterrupt?.();
+      // Resume wake-word listening so the next utterance has to wake first.
+      this.restart(0);
+    }, secs * 1000);
+  }
+
+  _clearContinueIdleTimer() {
+    if (this._continueIdleTimer) {
+      clearTimeout(this._continueIdleTimer);
+      this._continueIdleTimer = null;
+    }
   }
 
   resetForResume() {
@@ -618,6 +672,7 @@ export class PipelineManager {
 
   _clearScheduledWork() {
     this._clearTokenRefreshTimer();
+    this._clearContinueIdleTimer();
 
     if (this._restartTimeout) {
       clearTimeout(this._restartTimeout);

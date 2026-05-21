@@ -1266,6 +1266,36 @@ export class WakeWordManager {
     const isInteracting = session.tts.isPlaying
       || INTERACTING_STATES.includes(session.currentState);
     if (isInteracting) {
+      // Barge-in: in any conversation mode except "off", stop just cuts
+      // TTS audio and re-arms STT with the same conversation context.
+      // The user can rephrase immediately without saying the wake word
+      // again, and the chat / blur stay visible so they can see the
+      // cut-off response. mode="off" keeps the legacy hard-cancel.
+      const convMode = getSelectState(
+        session.hass,
+        session.config.satellite_entity,
+        'conversation_mode',
+        'llm_decides',
+      );
+      const convId = session.pipeline.currentConversationId;
+      if (convMode !== 'off' && convId) {
+        this._log.log('stop-word', `Barge-in (mode=${convMode}, conv=${convId}) — cutting TTS, re-arming STT`);
+
+        if (session._imageLingerTimeout) {
+          clearTimeout(session._imageLingerTimeout);
+          session._imageLingerTimeout = null;
+        }
+
+        session.tts.stop();
+        session.askQuestion.cancel();
+        // Re-arm immediately with the same conversation id. clearContinueState
+        // would null this out, so skip it. Chat / blur / state stay as-is.
+        session.pipeline.restartContinue(convId, {
+          wake_word_slot: session.pipeline.activeWakeWordSlot,
+        });
+        return;
+      }
+
       this._log.log('stop-word', 'Cancelling interaction');
 
       if (session._imageLingerTimeout) {
