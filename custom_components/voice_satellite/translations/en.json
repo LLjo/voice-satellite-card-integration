@@ -63,6 +63,14 @@
           "6_hours": "6 hours",
           "isolated": "Isolated"
         }
+      },
+      "conversation_mode": {
+        "name": "Conversation mode",
+        "state": {
+          "always": "Always continue (auto re-arm mic after reply)",
+          "llm_decides": "LLM decides (continue if reply ends with ?)",
+          "off": "Off (wake word every turn)"
+        }
       }
     },
     "number": {
@@ -71,6 +79,9 @@
       },
       "overlay_linger": {
         "name": "Finish delay"
+      },
+      "continue_timeout": {
+        "name": "Continue listening timeout"
       }
     },
     "switch": {

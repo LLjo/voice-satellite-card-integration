@@ -30,6 +30,7 @@ async def async_setup_entry(
     async_add_entities([
         VoiceSatelliteAnnouncementDurationNumber(entry),
         VoiceSatelliteOverlayLingerNumber(entry),
+        VoiceSatelliteContinueTimeoutNumber(entry),
     ])
 
     # Clean up stale number entities from older integration versions
@@ -126,5 +127,50 @@ class VoiceSatelliteOverlayLingerNumber(NumberEntity, RestoreEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the overlay linger duration."""
+        self._attr_native_value = int(value)
+        self.async_write_ha_state()
+
+
+class VoiceSatelliteContinueTimeoutNumber(NumberEntity, RestoreEntity):
+    """How many seconds the mic stays open waiting for a follow-up turn.
+
+    Applies in conversation modes "always" and "llm_decides". After this
+    many seconds of silence following a TTS reply, the satellite calls
+    pipeline.stop() and the conversation ends — the wake word is required
+    for the next turn. Set lower if you want quicker auto-close; higher
+    if you tend to think before speaking.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_has_entity_name = True
+    _attr_translation_key = "continue_timeout"
+    _attr_icon = "mdi:timer-outline"
+    _attr_native_min_value = 5
+    _attr_native_max_value = 120
+    _attr_native_step = 5
+    _attr_native_unit_of_measurement = UnitOfTime.SECONDS
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_continue_timeout"
+        self._attr_native_value = 30  # Default: 30 seconds
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return {"identifiers": {(DOMAIN, self._entry.entry_id)}}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state not in (
+            "unknown", "unavailable",
+        ):
+            try:
+                self._attr_native_value = int(float(last_state.state))
+            except (ValueError, TypeError):
+                pass
+
+    async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(value)
         self.async_write_ha_state()
